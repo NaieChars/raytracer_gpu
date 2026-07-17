@@ -1,5 +1,8 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+
+#include "Shader.h"
 
 #include <iostream>
 #include <fstream>
@@ -9,57 +12,6 @@
 const int SCR_WIDTH = 800;
 const int SCR_HEIGHT = 600;
 
-// ---- 工具函数：读取shader文件文本 ----
-std::string readFile(const char* path)
-{
-    std::ifstream file(path);
-    if (!file.is_open())
-    {
-        std::cerr << "Failed to open shader file: "  << path << "\n";
-        return "";
-    }
-    std::stringstream ss;
-    ss << file.rdbuf();  // file.rdbuf() 返回文件流的底层缓冲区指针，ss << 把整个文件缓冲区的剩余内容一次性导入ss字符串流中
-    return ss.str();
-}
-
-// ---- 工具函数：编译单个shader，返回着色器ID，带错误检查 ----
-GLuint compileShader(GLenum type, const std::string& source)
-{
-    GLuint shader = glCreateShader(type);   // 创建一个空的着色器对象，并返回它的句柄
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr); // 给着色器对象内部拷贝一份源码副本
-    glCompileShader(shader);    // 编译
-
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        char infoLog[1024];
-        glGetShaderInfoLog(shader, 1024, nullptr, infoLog);
-        std::cerr << "Shader compile error:\n" << infoLog << "\n";
-    }
-    return shader;
-}
-
-// ---- 工具函数：链接program，返回GPU可执行程序，带错误检查 ----
-GLuint linkProgram(std::initializer_list<GLuint> shaders)
-{
-    GLuint program = glCreateProgram();
-    for (GLuint s : shaders) glAttachShader(program, s);
-    glLinkProgram(program);
-
-    GLint success;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) 
-    {
-        char infoLog[1024];
-        glGetProgramInfoLog(program, 1024, nullptr, infoLog);
-        std::cerr << "Program link error:\n" << infoLog << "\n";
-    }
-    for (GLuint s : shaders) glDeleteShader(s);  // 链接完清空shaders
-    return program;
-}
 
 int main()
 {
@@ -103,31 +55,39 @@ int main()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);                                       // 解绑 GL_TEXTURE_2D
 
-    GLuint computeShader = compileShader(GL_COMPUTE_SHADER, readFile("src/shaders/hello.comp"));    // 相对路径，相对于运行exe时的工作目录，
-    GLuint computeProgram = linkProgram({computeShader});
-
-    GLuint vertShader = compileShader(GL_VERTEX_SHADER, readFile("src/shaders/quad.vert"));
-    GLuint fragShader = compileShader(GL_FRAGMENT_SHADER, readFile("src/shaders/quad.frag"));
-    GLuint quadProgram = linkProgram({vertShader, fragShader});
+    Shader raytraceProgram = Shader::computeShader("src/shaders/raytrace.comp");
+    Shader quadProgram = Shader::graphicsShader("src/shaders/quad.vert", "src/shaders/quad.frag");
 
 
     while (!glfwWindowShouldClose(window)) 
     {
-        // 派发compute shader，把结果写进 outputTexture
-        glUseProgram(computeProgram);
-        glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);   // glBindImageTexture(0... 这里的 0 要和.comp里 binding = 0 对应上, 这是CPU和GPU之间的接口约定
+        raytraceProgram.use();
+        glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
-        GLuint groupsX = (SCR_WIDTH + 15) / 16;                 // 整数向上取整
+        // 相机参数
+        float aspectRatio = float(SCR_WIDTH) / float(SCR_HEIGHT);
+        float viewportHeight = 2.0f;
+        float viewportWidth = aspectRatio * viewportHeight;
+        float focalLength = 1.0f;
+
+        raytraceProgram.setVec3("camOrigin", 0, 0, 0);
+        raytraceProgram.setVec3("camHorizontal", viewportWidth, 0, 0);
+        raytraceProgram.setVec3("camVertical", 0, viewportHeight, 0);
+        raytraceProgram.setVec3("camLowerLeftCorner", -viewportWidth/2, -viewportHeight/2, -focalLength);
+
+        raytraceProgram.setVec3("sphereCenter", 0, 0, -1);
+        raytraceProgram.setFloat("sphereRadius", 0.5f);
+
+        GLuint groupsX = (SCR_WIDTH + 15) / 16;                 
         GLuint groupsY = (SCR_HEIGHT + 15) / 16;
-        glDispatchCompute(groupsX, groupsY, 1);                 // 派发 Compute Shader 工作：告诉 GPU 启动 groupsX × groupsY × 1 个工作组。(z=1)
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);    // 确保屏障之前的所有纹理图像写入（imageStore）对屏障之后的同一图像单元访问可见。
+        glDispatchCompute(groupsX, groupsY, 1);                
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);   
 
-        // 把结果画到屏幕
         glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram(quadProgram);
-        glActiveTexture(GL_TEXTURE0);                                           // 激活 0 号纹理
+        quadProgram.use();
+        glActiveTexture(GL_TEXTURE0);                                           
         glBindTexture(GL_TEXTURE_2D, outputTexture);
-        glUniform1i(glGetUniformLocation(quadProgram, "screenTexture"), 0);     // 设置着色器程序 quadProgram 中的 uniform 采样器 screenTexture 的值。glGetUniformLocation 查询 shader 中 "screenTexture" 的位置。值 0 表示它从纹理单元 0 采样
+        quadProgram.setInt("screenTexture", 0);    
         glDrawArrays(GL_TRIANGLES, 0, 3);
         
         glfwSwapBuffers(window);
@@ -136,5 +96,4 @@ int main()
 
     glfwTerminate();
     return 0;
-
 }
