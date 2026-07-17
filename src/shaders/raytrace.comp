@@ -1,0 +1,68 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba32f, binding = 0) uniform image2D outputImage;
+
+const float INF = uintBitsToFloat(0x7F800000u);
+
+// 相机参数
+uniform vec3 camOrigin;
+uniform vec3 camLowerLeftCorner;
+uniform vec3 camHorizontal;
+uniform vec3 camVertical;
+
+// 球体参数，暂时先写死一个球，后面再改成 SSBO 存放多个球
+uniform vec3 sphereCenter;
+uniform float sphereRadius;
+
+// 光线与球体求交，返回命中距离，没命中返回-1.0
+float hitSphere(vec3 center, float radius, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max)
+{
+    vec3 oc = rayOrigin - center;
+    float a = dot(rayDir, rayDir);
+    float halfB = dot(oc, rayDir);
+    float c = dot(oc, oc) - radius * radius;
+
+    float discriminant = halfB * halfB - a * c;
+
+    if (discriminant < 0.0) return -1.0;
+
+    float root = (-halfB - sqrt(discriminant)) / a;
+    if (!(root > t_min && root < t_max))
+    {
+        root = (-halfB + sqrt(discriminant)) / a;
+        if (!(root > t_min && root < t_max))
+            return -1.0;
+    }
+    return root;
+}
+
+
+vec3 rayColor(vec3 rayOrigin, vec3 rayDir)
+{
+    float t = hitSphere(sphereCenter, sphereRadius, rayOrigin, rayDir, 0.0001, INF);
+    if (t > 0.0)
+    {
+        vec3 normal = normalize(rayOrigin + rayDir * t - sphereCenter);
+        return 0.5 * (normal + vec3(1.0));
+    }
+    
+    vec3 unitDir = normalize(rayDir);
+    float a = 0.5 * (unitDir.y + 1.0);
+    return (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0); 
+}
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imageSize = imageSize(outputImage);
+    if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
+
+    float u = float(pixelCoord.x) / float(imageSize.x);
+    float v = float(pixelCoord.y) / float(imageSize.y);
+
+    vec3 rayDir = camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin;
+    vec3 color = rayColor(camOrigin, rayDir);
+
+    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
+}
