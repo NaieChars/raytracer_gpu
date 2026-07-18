@@ -11,9 +11,30 @@ uniform vec3 camLowerLeftCorner;
 uniform vec3 camHorizontal;
 uniform vec3 camVertical;
 
-// 球体参数，暂时先写死一个球，后面再改成 SSBO 存放多个球
-uniform vec3 sphereCenter;
-uniform float sphereRadius;
+// bvh 根节点索引
+uniform int bvhRootIndex;
+
+struct BVHNode 
+{
+    vec3 aabbMin;
+    int leftChild;
+    vec3 aabbMax;
+    int rightChild;
+    int isLeaf;
+    float pad0, pad1, pad2;
+};
+
+struct Sphere 
+{
+    vec3 center;
+    float radius;
+    int materialId;
+    float pad0, pad1, pad2;
+};
+
+// 声明着色器存储缓冲区SSBO
+layout(std430, binding = 1) readonly buffer BVHBuffer {BVHNode nodes[];};
+layout(std430, binding = 2) readonly buffer SphereBuffer {Sphere spheres[];};
 
 // 光线与球体求交，返回命中距离，没命中返回-1.0
 float hitSphere(vec3 center, float radius, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max)
@@ -37,13 +58,80 @@ float hitSphere(vec3 center, float radius, vec3 rayOrigin, vec3 rayDir, float t_
     return root;
 }
 
+// 包围盒求交，slab方法
+bool aabbHit(vec3 boxMin, vec3 boxMax, vec3 rayOrigin, vec3 rayDir, float tMax)
+{
+    float tmin = 0.0;      // 光线起点内部视为 0
+    float tmax = tMax;
+
+    for (int i = 0; i < 3; ++i) 
+    {
+        float invD = 1.0 / rayDir[i];
+        float t0 = (boxMin[i] - rayOrigin[i]) * invD;
+        float t1 = (boxMax[i] - rayOrigin[i]) * invD;
+        if (invD < 0.0) 
+        {   // 确保 t0 是近面，t1 是远面
+            float tmp = t0; t0 = t1; t1 = tmp;
+        }
+        tmin = max(tmin, t0);
+        tmax = min(tmax, t1);
+        if (tmax <= tmin)
+            return false;
+    }
+    return true;
+}
+
+// BVH遍历器，参数输出命中球的索引以及命中距离
+bool traverseBVH(vec3 rayOrigin, vec3 rayDir, out int hitSphereIdx, out float hitT)
+{
+    int stack[32];
+    int stackPtr = 0;
+    stack[stackPtr++] = bvhRootIndex; // 根节点
+
+    hitT = INF;
+    bool hitAnything = false;
+
+    while (stackPtr > 0)
+    {
+        int nodeIdx = stack[--stackPtr];
+        BVHNode node = nodes[nodeIdx];
+
+        if (!aabbHit(node.aabbMin, node.aabbMax, rayOrigin, rayDir, hitT))
+            continue;
+        
+        if (node.isLeaf == 1)
+        {
+            int sIdx = node.rightChild; // leaf节点里rightChild存的是图元下标
+            float t = hitSphere(spheres[sIdx].center, spheres[sIdx].radius, rayOrigin, rayDir, 0.0001, hitT);
+            if (t != -1.0)
+            {
+                hitT = t;
+                hitSphereIdx = sIdx;
+                hitAnything = true;
+            }
+        }
+        else
+        {
+            stack[stackPtr++] = node.leftChild;
+            stack[stackPtr++] = node.rightChild;
+        }
+    }
+    return hitAnything;
+}
+
 
 vec3 rayColor(vec3 rayOrigin, vec3 rayDir)
 {
-    float t = hitSphere(sphereCenter, sphereRadius, rayOrigin, rayDir, 0.0001, INF);
-    if (t > 0.0)
+    int hitSphereIdx;
+    float t;
+    bool hit = traverseBVH(rayOrigin, rayDir, hitSphereIdx, t);
+
+    if (hit)
     {
-        vec3 normal = normalize(rayOrigin + rayDir * t - sphereCenter);
+        Sphere s = spheres[hitSphereIdx];
+        vec3 hitPoint = rayOrigin + rayDir * t;
+        vec3 normal = normalize(hitPoint - s.center);
+
         return 0.5 * (normal + vec3(1.0));
     }
     
@@ -51,6 +139,8 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir)
     float a = 0.5 * (unitDir.y + 1.0);
     return (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0); 
 }
+
+
 
 void main()
 {
@@ -61,7 +151,7 @@ void main()
     float u = float(pixelCoord.x) / float(imageSize.x);
     float v = float(pixelCoord.y) / float(imageSize.y);
 
-    vec3 rayDir = camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin;
+    vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin);
     vec3 color = rayColor(camOrigin, rayDir);
 
     imageStore(outputImage, pixelCoord, vec4(color, 1.0));
