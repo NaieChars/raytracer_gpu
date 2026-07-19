@@ -296,11 +296,17 @@ void main()
 
     uint rngState = initRNG(pixelCoord, imageSize, frameCount);
 
-    float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);     // 随机偏移做抗锯齿
+    float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);
     float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
     vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin);
-    vec3 color = rayColor(camOrigin, rayDir, rngState);
+    vec3 newSample = rayColor(camOrigin, rayDir, rngState);
 
-    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
+    // 读取之前累积的样本和；第0帧时outputImage里是未初始化的垃圾数据，
+    // 所以第0帧不读，直接把newSample当作起始值，避免脏数据污染结果
+    vec3 previousSum = vec3(0.0);
+    if (frameCount > 0u) previousSum = imageLoad(outputImage, pixelCoord).rgb;  // 读取上一帧的颜色。一直在累计读取，取平均值给farg做
+
+    vec3 newSum = previousSum + newSample;
+    imageStore(outputImage, pixelCoord, vec4(newSum, 1.0));
 }

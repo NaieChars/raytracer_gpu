@@ -3,6 +3,7 @@
 
 #include <glad/glad.h>
 #include <iostream>
+#include <iomanip> 
 
 void GLAPIENTRY debugCallback(GLenum source,
                               GLenum type,
@@ -25,6 +26,27 @@ void GLAPIENTRY debugCallback(GLenum source,
             default: break;
         }
         std::cerr << message << std::endl;
+    }
+}
+
+// 输出帧数
+void showFPS() {
+    static int frameCount = 0;
+    static double lastTime = glfwGetTime();
+
+    frameCount++;
+    double currentTime = glfwGetTime();
+    double elapsed = currentTime - lastTime;
+
+    if (elapsed >= 1.0) {
+        double fps = frameCount / elapsed;
+
+        // \r 回到行首，不换行；输出固定宽度避免残留
+        std::cout << "\rFPS: " << std::fixed << std::setprecision(1) 
+                  << std::setw(6) << fps << std::flush;
+
+        frameCount = 0;
+        lastTime = currentTime;
     }
 }
 

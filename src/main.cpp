@@ -87,7 +87,7 @@ int main()
     while (!glfwWindowShouldClose(window)) 
     {
         raytraceProgram.use();
-        glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+        glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
         // 相机参数
         float aspectRatio = float(SCR_WIDTH) / float(SCR_HEIGHT);
@@ -115,10 +115,13 @@ int main()
         glActiveTexture(GL_TEXTURE0);                                           
         glBindTexture(GL_TEXTURE_2D, outputTexture);
         quadProgram.setInt("screenTexture", 0);    
+        quadProgram.setInt("sampleCount", (int)(frameCount + 1)); // 新增:告诉fragment shader目前累积了几帧
         glDrawArrays(GL_TRIANGLES, 0, 3);
         
         glfwSwapBuffers(window);
         glfwPollEvents();
+
+        showFPS();
     }
 
     glfwTerminate();
