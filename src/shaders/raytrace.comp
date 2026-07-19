@@ -3,17 +3,21 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(rgba32f, binding = 0) uniform image2D outputImage;
 
+// ---------------- 常量 ---------------------
 const float INF = uintBitsToFloat(0x7F800000u);
+#define PI 3.141592653589793
 
+// ---------------- uniform -------------------
 // 相机参数
 uniform vec3 camOrigin;
 uniform vec3 camLowerLeftCorner;
 uniform vec3 camHorizontal;
 uniform vec3 camVertical;
 
-// bvh 根节点索引
-uniform int bvhRootIndex;
+uniform int bvhRootIndex;   // bvh 根节点索引s
+uniform uint frameCount;    // CPU端每帧递增后传入
 
+//---------------- data struct -----------------
 struct BVHNode 
 {
     vec3 aabbMin;
@@ -32,32 +36,103 @@ struct Sphere
     float pad0, pad1, pad2;
 };
 
-// 声明着色器存储缓冲区SSBO
+struct HitRecord
+{
+    vec3 point;
+    vec3 normal;
+    float t;
+    int materialId;
+    bool frontFace; // 折射时用到，光线从内部还是外部打到球
+};
+
+struct Material
+{
+    vec3 albedo;   // lambertian/metal 用颜色
+    float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
+    float ir;           // dielectric专用，折射率
+    int type;           // 0=lambertian, 1=metal, 2=dielectric
+    float pad0, pad1;
+};
+
+
+// ------------------- 声明着色器存储缓冲区SSBO ---------------------------
 layout(std430, binding = 1) readonly buffer BVHBuffer {BVHNode nodes[];};
 layout(std430, binding = 2) readonly buffer SphereBuffer {Sphere spheres[];};
+layout(std430, binding = 3) readonly buffer MaterialBuffer {Material materials[];};
 
-// 光线与球体求交，返回命中距离，没命中返回-1.0
-float hitSphere(vec3 center, float radius, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max)
+
+//------------------------ 随机数 --------------------------
+// PCG哈希，输入一个整数种子，输出另一个"随机"整数
+uint pcgHash(uint input_)
 {
-    vec3 oc = rayOrigin - center;
+    uint state = input_ * 747796405u + 2891336453u;                         // 线性同余生成器公式，新状态 = 旧状态 × 大奇数 + 另一个大奇数，两个奇数是PCG 作者精心挑选的“魔法数字”
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;    // 旋转+乘法，用数据本身的几个高位去决定怎样搅动剩下的位
+    return (word >> 22u) ^ word;
+}
+
+// 每个线程调用后，rngState会被更新，下次调用产生不同的数
+float randFloat(inout uint rngState)
+{
+    rngState = pcgHash(rngState);           // 更新状态
+    return float(rngState) / 4294967296.0;  // 除以 2^32，映射到 [0,1)
+}
+
+// 给每个线程发独一无二的种子
+uint initRNG(ivec2 pixelCoord, ivec2 imgSize, uint frameCount) 
+{
+    uint seed = uint(pixelCoord.x) + uint(pixelCoord.y) * uint(imgSize.x);  // 将二维像素坐标展开成一维索引seed
+    seed = seed * 719393u + frameCount * 96923u;                            // 用一个大奇数放大，免相邻种子在经过 pcgHash 后产生的序列仍有微弱关联。引入帧数，让同一像素在不同帧的种子完全不同
+    return pcgHash(seed);
+}
+
+// 对应RTIOW的random_unit_vector()，用解析公式直接生成单位球面上均匀分布的点
+vec3 randomUnitVector(inout uint rngState) 
+{
+    float z = randFloat(rngState) * 2.0 - 1.0;
+    float a = randFloat(rngState) * 2.0 * PI;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    return vec3(r * cos(a), r * sin(a), z);
+}
+
+// 对应RTIOW的random_in_unit_disk()，用于metal的fuzz模糊反射
+vec2 randomInUnitDisk(inout uint rngState) 
+{
+    float a = randFloat(rngState) * 2.0 * PI;
+    float r = sqrt(randFloat(rngState));
+    return vec2(r * cos(a), r * sin(a));
+}
+
+
+// ------------------- 核心计算：光线求交----------------------
+// 光线与球体求交
+bool hitSphere(Sphere s, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max, out HitRecord rec)
+{
+    vec3 oc = rayOrigin - s.center;
     float a = dot(rayDir, rayDir);
     float halfB = dot(oc, rayDir);
-    float c = dot(oc, oc) - radius * radius;
-
+    float c = dot(oc, oc) - s.radius * s.radius;
     float discriminant = halfB * halfB - a * c;
-
-    if (discriminant < 0.0) return -1.0;
+    if (discriminant < 0.0) return false;
 
     float root = (-halfB - sqrt(discriminant)) / a;
     if (!(root > t_min && root < t_max))
     {
         root = (-halfB + sqrt(discriminant)) / a;
         if (!(root > t_min && root < t_max))
-            return -1.0;
+            return false;
     }
-    return root;
+
+    rec.t = root;
+    rec.point = rayOrigin + root * rayDir;
+    vec3 outwardNormal = (rec.point - s.center) / s.radius;
+    rec.frontFace = dot(rayDir, outwardNormal) < 0.0;
+    rec.normal = rec.frontFace ? outwardNormal : -outwardNormal;
+    rec.materialId = s.materialId;
+    return true;
 }
 
+
+// ------------------------------- BVH ---------------------------------------
 // 包围盒求交，slab方法
 bool aabbHit(vec3 boxMin, vec3 boxMax, vec3 rayOrigin, vec3 rayDir, float tMax)
 {
@@ -81,14 +156,16 @@ bool aabbHit(vec3 boxMin, vec3 boxMax, vec3 rayOrigin, vec3 rayDir, float tMax)
     return true;
 }
 
+
 // BVH遍历器，参数输出命中球的索引以及命中距离
-bool traverseBVH(vec3 rayOrigin, vec3 rayDir, out int hitSphereIdx, out float hitT)
+bool traverseBVH(vec3 rayOrigin, vec3 rayDir, float tMin, float tMax, out HitRecord rec)
 {
     int stack[32];
     int stackPtr = 0;
-    stack[stackPtr++] = bvhRootIndex; // 根节点
+    stack[stackPtr++] = bvhRootIndex; 
 
-    hitT = INF;
+    HitRecord tempRec;
+    float closestSoFar = tMax;
     bool hitAnything = false;
 
     while (stackPtr > 0)
@@ -96,17 +173,16 @@ bool traverseBVH(vec3 rayOrigin, vec3 rayDir, out int hitSphereIdx, out float hi
         int nodeIdx = stack[--stackPtr];
         BVHNode node = nodes[nodeIdx];
 
-        if (!aabbHit(node.aabbMin, node.aabbMax, rayOrigin, rayDir, hitT))
+        if (!aabbHit(node.aabbMin, node.aabbMax, rayOrigin, rayDir, closestSoFar))
             continue;
         
         if (node.isLeaf == 1)
         {
-            int sIdx = node.rightChild; // leaf节点里rightChild存的是图元下标
-            float t = hitSphere(spheres[sIdx].center, spheres[sIdx].radius, rayOrigin, rayDir, 0.0001, hitT);
-            if (t != -1.0)
+            int sIdx = node.rightChild;
+            if (hitSphere(spheres[sIdx], rayOrigin, rayDir, tMin, closestSoFar, tempRec))
             {
-                hitT = t;
-                hitSphereIdx = sIdx;
+                closestSoFar = tempRec.t;
+                rec = tempRec;
                 hitAnything = true;
             }
         }
@@ -119,40 +195,112 @@ bool traverseBVH(vec3 rayOrigin, vec3 rayDir, out int hitSphereIdx, out float hi
     return hitAnything;
 }
 
-
-vec3 rayColor(vec3 rayOrigin, vec3 rayDir)
+// ------------------------- 散射 --------------------------------
+// 返回值：是否发生散射(dielectric/lambertian/metal理论上总会散射，
+// 但metal在极端角度下反射方向可能指向物体内部，这时候算作被吸收)
+// scatteredDir: 散射后的新射线方向
+// attenuation: 这次散射的反射率，为什么是albedo？还剩下的颜色可以理解为还剩的能量，满能量就是白光vec3(1.0)
+bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scatteredDir, out vec3 attenuation)
 {
-    int hitSphereIdx;
-    float t;
-    bool hit = traverseBVH(rayOrigin, rayDir, hitSphereIdx, t);
+    Material mat = materials[rec.materialId];
 
-    if (hit)
+    if (mat.type == 0)
     {
-        Sphere s = spheres[hitSphereIdx];
-        vec3 hitPoint = rayOrigin + rayDir * t;
-        vec3 normal = normalize(hitPoint - s.center);
-
-        return 0.5 * (normal + vec3(1.0));
+        // ---- Lambertian ----
+        vec3 scatterDir = rec.normal + randomUnitVector(rngState);
+        // 退化情况处理：如果随机方向正好和法线反向抵消，方向会变成接近0的向量
+        if (length(scatterDir) < 1e-4) scatterDir = rec.normal;
+        scatteredDir = normalize(scatterDir);
+        attenuation = mat.albedo;
+        return true;
     }
+    else if (mat.type == 1)
+    {
+        // ---- Metal ----
+        vec3 reflected = reflect(normalize(rayDir), rec.normal);
+        vec2 fuzzOffset = randomInUnitDisk(rngState) * mat.fuzz;
+        scatteredDir = normalize(reflected + vec3(fuzzOffset, 0.0));
+        attenuation = mat.albedo;
+        return dot(scatteredDir, rec.normal) > 0.0; // 模糊后如果方向钻进物体内部,视为被吸收
+    }
+    else
+    {
+        // ---- Dielectric(玻璃) ----
+        attenuation = vec3(1.0); // 玻璃不吸收颜色
+        float refractionRatio = rec.frontFace ? (1.0 / mat.ir) : mat.ir;
+
+        vec3 unitDir = normalize(rayDir);
+        float cosTheta = min(dot(-unitDir, rec.normal), 1.0);
+        float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+        bool cannotRefract = refractionRatio * sinTheta > 1.0;
+
+        // Schlick近似，对应RTIOW的reflectance()函数
+        float r0 = (1.0 - refractionRatio) / (1.0 + refractionRatio);
+        r0 = r0 * r0;
+        float reflectance = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+
+        if (cannotRefract || reflectance > randFloat(rngState)) 
+        {
+            scatteredDir = reflect(unitDir, rec.normal);
+        } else 
+        {
+            scatteredDir = refract(unitDir, rec.normal, refractionRatio);
+        }
+        return true;
+    }
+}
+
+// ----------------------- Draw! ---------------------------
+vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
+{
+    vec3 attenuation = vec3(1.0);
+    int maxDepth = 16;
     
-    vec3 unitDir = normalize(rayDir);
-    float a = 0.5 * (unitDir.y + 1.0);
-    return (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0); 
+    for (int depth = 0; depth < maxDepth; depth++)
+    {
+        HitRecord rec;
+        if (traverseBVH(rayOrigin, rayDir, 0.0001, INF, rec))
+        {
+            vec3 scatteredDir;
+            vec3 matAttenuation;
+            if (scatter(rec, rayDir, rngState, scatteredDir, matAttenuation))
+            {
+                attenuation *= matAttenuation;
+                rayOrigin = rec.point;
+                rayDir = scatteredDir;
+            }
+            else
+            {
+                return vec3(0.0);
+            }
+        }
+        else
+        {
+            vec3 unitDir = normalize(rayDir);
+            float a = 0.5 * (unitDir.y + 1.0);
+            vec3 skyColor = (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0); 
+            return attenuation * skyColor;
+        }
+    }
+    return vec3(0.0); // 超过最大深度还没跳出，视为完全吸收
 }
 
 
-
+//-------------------- main ----------------------
 void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imageSize = imageSize(outputImage);
     if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
 
-    float u = float(pixelCoord.x) / float(imageSize.x);
-    float v = float(pixelCoord.y) / float(imageSize.y);
+    uint rngState = initRNG(pixelCoord, imageSize, frameCount);
+
+    float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);     // 随机偏移做抗锯齿
+    float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
     vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin);
-    vec3 color = rayColor(camOrigin, rayDir);
+    vec3 color = rayColor(camOrigin, rayDir, rngState);
 
     imageStore(outputImage, pixelCoord, vec4(color, 1.0));
 }

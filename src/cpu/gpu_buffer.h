@@ -30,5 +30,16 @@ GLuint createShereSSBO(const std::vector<GPUSphere>& spheres)
     return ssbo;
 }
 
+GLuint createMaterialSSBO(const std::vector<GPUMaterial>& material)
+{
+    GLuint ssbo;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, material.size() * sizeof(GPUMaterial), material.data(), GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    return ssbo;
+}
 
 #endif

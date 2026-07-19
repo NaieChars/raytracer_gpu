@@ -46,6 +46,11 @@ class Shader
             glUniform3f(glGetUniformLocation(program, name.c_str()), x, y, z);
         }
 
+        void setUint(const std::string& name, unsigned int v) const 
+        {
+        glUniform1ui(glGetUniformLocation(program, name.c_str()), v);
+        }
+
     private:
         Shader(GLuint prog) : program(prog) {}
 

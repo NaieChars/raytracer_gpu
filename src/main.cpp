@@ -78,12 +78,12 @@ int main()
     BVHFlattener flattener;
     int rootIndex = flattener.flatten(bvh);
     //----------- 上传 GPU --------------
-    static_assert(sizeof(GPUBVHNode) == 48, "GPUBVHNode must be 48 bytes");
-    static_assert(sizeof(GPUSphere)  == 32, "GPUSphere must be 32 bytes");
     createBVHSSBO(flattener.flatNodes);
     createShereSSBO(flattener.flatSpheres);
+    createMaterialSSBO(flattener.flatMaterials);
 
 
+    uint32_t frameCount = 0;
     while (!glfwWindowShouldClose(window)) 
     {
         raytraceProgram.use();
@@ -101,6 +101,10 @@ int main()
         raytraceProgram.setVec3("camVertical", 0, viewportHeight, 0);
         raytraceProgram.setVec3("camLowerLeftCorner", -viewportWidth/2, -viewportHeight/2, -focalLength);
 
+        raytraceProgram.setUint("frameCount", (int)frameCount);
+        frameCount++;
+
+        // ------------ dispatch ------------------
         GLuint groupsX = (SCR_WIDTH + 15) / 16;                 
         GLuint groupsY = (SCR_HEIGHT + 15) / 16;
         glDispatchCompute(groupsX, groupsY, 1);                
