@@ -1,0 +1,41 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba32f, binding = 0) uniform image2D dstImage;  // 读写模式
+
+uniform sampler2D srcTex;   // 分辨率更小的图
+uniform vec2 srcTexelSize;
+uniform float bloomRadius; // 控制光晕扩散范围,1.0是标准值,调大会让光晕更"糊"
+
+// 3x3 tent filter升采样,中心权重最高、向外递减,形成柔和的过渡而不是生硬的边界
+vec3 upsampleTent(vec2 uv) {
+    vec4 o = srcTexelSize.xyxy * vec4(1.0, 1.0, -1.0, 0.0) * bloomRadius;
+
+    vec3 result  = texture(srcTex, uv - o.xy).rgb;
+    result += texture(srcTex, uv - o.wy).rgb * 2.0;
+    result += texture(srcTex, uv - o.zy).rgb;
+    result += texture(srcTex, uv + o.zw).rgb * 2.0;
+    result += texture(srcTex, uv       ).rgb * 4.0;
+    result += texture(srcTex, uv + o.xw).rgb * 2.0;
+    result += texture(srcTex, uv + o.zy).rgb;
+    result += texture(srcTex, uv + o.wy).rgb * 2.0;
+    result += texture(srcTex, uv + o.xy).rgb;
+
+    return result / 16.0;
+}
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(dstImage);
+    if (pixelCoord.x >= dstSize.x || pixelCoord.y >= dstSize.y) return;
+
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(dstSize);
+    vec3 upsampled = upsampleTent(uv);  // 从低分辨率提取出来的更大范围的光晕，并升到当前粉分辨率
+
+    // 关键:不是覆盖,是叠加到dstImage原有内容上
+    // dstImage此时存的是"这一级降采样时保留的原始高亮细节",
+    // 加上"从更小一级传上来的、更大范围的柔光",两者叠加才是分层Bloom的精髓
+    vec3 existing = imageLoad(dstImage, pixelCoord).rgb;
+    imageStore(dstImage, pixelCoord, vec4(existing + upsampled, 1.0));
+}

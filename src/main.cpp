@@ -6,6 +6,8 @@
 #include "debug.h"
 #include "cpu/scene.h"
 #include "cpu/gpu_buffer.h"
+#include "create_tex.h"
+#include "Config.h"
 
 #include <iostream>
 #include <fstream>
@@ -47,11 +49,11 @@ int main()
         return -1;
     }
 
-    /*
+    
     glEnable(GL_DEBUG_OUTPUT);
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS); // 让错误发生在调用处，便于定位
     glDebugMessageCallback(debugCallback, nullptr);
-    */
+    
 
     // ----------------- 没有绑定VAO的 glDrawArrays不会执行，所以我们仍要绑定一个 VAO，哪怕根本不用顶点属性
     GLuint dummyVAO;
@@ -59,31 +61,22 @@ int main()
     glBindVertexArray(dummyVAO);
 
     // ----------------- 创建纹理-------------------------
-    GLuint outputTexture, resolvedTexture, brightTexture, blurTempTexture, finalTexture;
-    
-    auto createFloatTexture = [&](GLuint& tex) {
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, SCR_WIDTH, SCR_HEIGHT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    };
+    GLuint outputTexture, resolvedTexture, brightTexture, finalTexture;
 
-    createFloatTexture(outputTexture);
-    createFloatTexture(resolvedTexture);
-    createFloatTexture(brightTexture);
-    createFloatTexture(blurTempTexture);
-    createFloatTexture(finalTexture);
+    createFloatTexture(outputTexture, SCR_WIDTH, SCR_HEIGHT);
+    createFloatTexture(resolvedTexture, SCR_WIDTH, SCR_HEIGHT);
+    createFloatTexture(brightTexture, SCR_WIDTH, SCR_HEIGHT);
+    createFloatTexture(finalTexture, SCR_WIDTH, SCR_HEIGHT);
+
+    BloomMipChain bloomMips;
+    createBloomMipChain(bloomMips, SCR_WIDTH, SCR_HEIGHT);
 
     // --------------------------------- 编译着色器 ------------------------------------------
     Shader raytraceProgram  = Shader::computeShader("src/shaders/raytrace.comp");
     Shader quadProgram      = Shader::graphicsShader("src/shaders/quad.vert", "src/shaders/quad.frag");
     Shader resolveProgram   = Shader::computeShader("src/shaders/resolve.comp");
-    Shader blurHProgram     = Shader::computeShader("src/shaders/blurH.comp");
-    Shader blurVProgram     = Shader::computeShader("src/shaders/blurV.comp");
+    Shader downsampleProgram = Shader::computeShader("src/shaders/downsample.comp");
+    Shader upsampleProgram   = Shader::computeShader("src/shaders/upsample.comp");
     Shader compositeProgram = Shader::computeShader("src/shaders/composite.comp");
 
 
@@ -156,30 +149,63 @@ int main()
         glBindImageTexture(1, resolvedTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
         glBindImageTexture(2, brightTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
         resolveProgram.setInt("sampleCount", (int)(frameCount + 1));
-        resolveProgram.setFloat("bloomThreshold", 1.0f); // 亮度阈值,可以按场景调
+        resolveProgram.setFloat("bloomThreshold", BLOOMTHRESHOLD);
         glDispatchCompute(groupsX, groupsY, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
-        // ---------- 阶段3: 横向模糊 ----------
-        blurHProgram.use();
-        glBindImageTexture(0, brightTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-        glBindImageTexture(1, blurTempTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-        glDispatchCompute(groupsX, groupsY, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        // ---------- 阶段3: 逐级降采样,构建mip链 ----------
+        downsampleProgram.use();
+        GLuint srcTex = brightTexture;
+        int srcW = SCR_WIDTH, srcH = SCR_HEIGHT;
 
-        // ---------- 阶段4: 纵向模糊(结果写回brightTexture,复用它当"模糊后高亮图") ----------
-        blurVProgram.use();
-        glBindImageTexture(0, blurTempTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-        glBindImageTexture(1, brightTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-        glDispatchCompute(groupsX, groupsY, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        for (int level = 1; level <= BLOOM_MIP_LEVELS; level++)
+        {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, srcTex);
+            downsampleProgram.setInt("srcTex", 0);
+            downsampleProgram.setVec2("srcTexelSize", 1.0f / srcW, 1.0f / srcH);
+            glBindImageTexture(0, bloomMips.textures[level], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+
+            GLuint gx = (bloomMips.widths[level] + 15) / 16;
+            GLuint gy = (bloomMips.heights[level] + 15) / 16;
+            glDispatchCompute(gx, gy, 1);
+            // 注意:这里barrier要同时包含TEXTURE_FETCH,因为下一轮要用sampler2D采样这次写入的结果,
+            // 光有IMAGE_ACCESS_BARRIER只保证image2D读写顺序,不保证texture()采样能看到最新数据
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+            srcTex = bloomMips.textures[level];
+            srcW = bloomMips.widths[level];
+            srcH = bloomMips.heights[level];
+        }
+
+        // ---------- 阶段4: 逐级升采样叠加,从最小一级往回叠加,最终叠回brightTexture本身 ----------
+        upsampleProgram.use();
+        for (int level = BLOOM_MIP_LEVELS; level >= 1; level--)
+        {
+            GLuint dstTex = (level == 1) ? brightTexture : bloomMips.textures[level - 1];
+            int dstW = (level == 1) ? SCR_WIDTH  : bloomMips.widths[level - 1];
+            int dstH = (level == 1) ? SCR_HEIGHT : bloomMips.heights[level - 1];
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, bloomMips.textures[level]);
+            upsampleProgram.setInt("srcTex", 0);
+            upsampleProgram.setVec2("srcTexelSize", 1.0f / bloomMips.widths[level], 1.0f / bloomMips.heights[level]);
+            upsampleProgram.setFloat("bloomRadius", BLOOMRADIUS); 
+
+            glBindImageTexture(0, dstTex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+            GLuint gx = (dstW + 15) / 16;
+            GLuint gy = (dstH + 15) / 16;
+            glDispatchCompute(gx, gy, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        }
 
         // ---------- 阶段5: 叠加bloom + gamma校正 ----------
         compositeProgram.use();
         glBindImageTexture(0, resolvedTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
         glBindImageTexture(1, brightTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
         glBindImageTexture(2, finalTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-        compositeProgram.setFloat("bloomIntensity", 0.3f); // bloom强度,可以按喜好调
+        compositeProgram.setFloat("bloomIntensity", BLOOMINTENSITY); 
         glDispatchCompute(groupsX, groupsY, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 

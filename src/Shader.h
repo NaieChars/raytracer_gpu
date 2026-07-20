@@ -50,6 +50,11 @@ class Shader
         {
         glUniform1ui(glGetUniformLocation(program, name.c_str()), v);
         }
+        
+        void setVec2(const std::string& name, float x, float y) const 
+        {
+            glUniform2f(glGetUniformLocation(program, name.c_str()), x, y);
+        }
 
     private:
         Shader(GLuint prog) : program(prog) {}
