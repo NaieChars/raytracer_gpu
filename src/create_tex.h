@@ -26,7 +26,6 @@ struct BloomMipChain {
     GLuint textures[BLOOM_MIP_LEVELS + 1]; // 0号不用，1~5有效
     int widths[BLOOM_MIP_LEVELS + 1];
     int heights[BLOOM_MIP_LEVELS + 1];
-    int BLOOM_MIP_LEVELS;
 
     // 构造函数：自动清空指针
     BloomMipChain() {
