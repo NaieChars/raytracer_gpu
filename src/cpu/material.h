@@ -114,7 +114,7 @@ class dielectric : public material
     }
 };
 
-/*
+
 class diffuse_light : public material
 {
     public:
@@ -132,6 +132,14 @@ class diffuse_light : public material
     {
         return emit->value(u, v, p);
     }
+
+    vec3 get_emit_color()
+    {
+        auto constColor = std::dynamic_pointer_cast<constant_texture>(emit);
+        if (constColor)
+            return constColor->color;
+        return vec3(0, 1, 1);
+    }
 };
 
 // 各向同性
@@ -144,11 +152,10 @@ class isotropic : public material
 
         bool scatter(const vec3& rayOrigin, const vec3& in_rayDir, const hit_record& rec, vec3& attenuation, const vec3& rayPoint, const vec3& out_rayDir) const override
         {
-            scattered = ray(rec.p, random_unit_vector(), r_in.time());
-            attenuation = albedo->value(rec.u, rec.v, rec.p);
+            
             return true;
         }
 };
-*/
+
 
 #endif

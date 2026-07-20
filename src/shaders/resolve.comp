@@ -1,0 +1,26 @@
+#version 430 core 
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba32f, binding = 0) uniform image2D accumImage;             // 读:raytrace.comp累积的样本和
+layout(rgba32f, binding = 1) writeonly uniform image2D resolvedImage; // 写:求平均后的线性HDR颜色,不含gamma
+layout(rgba32f, binding = 2) writeonly uniform image2D brightImage;   // 写:亮度超过阈值的部分,留给后面模糊
+
+uniform int sampleCount;
+uniform float bloomThreshold; // 亮度超过这个值才会被算进bloom,低于的部分直接清零
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imgSize = imageSize(accumImage);
+    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y) return;
+
+    vec3 sum = imageLoad(accumImage, pixelCoord).rgb;
+    vec3 color = sum / float(sampleCount);      // 平均每一帧，从farg迁移过来
+
+    imageStore(resolvedImage, pixelCoord, vec4(color, 1.0));
+
+    // 标准亮度公式（ITU-R BT.709）估算这个像素有多亮
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    vec3 brightPart = (luminance > bloomThreshold) ? color : vec3(0.0);
+    imageStore(brightImage, pixelCoord, vec4(brightPart, 1.0));
+}

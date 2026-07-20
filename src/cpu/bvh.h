@@ -110,7 +110,7 @@ struct GPUMaterial
     glm::vec3 albedo;   // lambertian/metal 用颜色
     float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
     float ir;           // dielectric专用，折射率
-    int type;           // 0=lambertian, 1=metal, 2=dielectric
+    int type;           // 0=lambertian, 1=metal, 2=dielectric, 3=difuse_light
     float pad0, pad1;
 };
 static_assert(sizeof(GPUMaterial) == 32, "GPUMaterial size mismatch, check alignment");
@@ -121,6 +121,7 @@ class BVHFlattener
         std::vector<GPUBVHNode> flatNodes;
         std::vector<GPUSphere> flatSpheres;
         std::vector<GPUMaterial> flatMaterials; 
+        std::vector<int> flatLightIndices;  // 新增:记录哪些下标的球是发光体
 
         int flatten(shared_ptr<hittable> root)
         {
@@ -158,6 +159,11 @@ class BVHFlattener
             {
                 gpuMat.type = 2;
                 gpuMat.ir = (float)diel->refraction_index;
+            }
+            else if (auto light = std::dynamic_pointer_cast<diffuse_light>(mat))
+            {
+                gpuMat.type = 3;
+                gpuMat.albedo = glm::vec3(light->get_emit_color().x(), light->get_emit_color().y(), light->get_emit_color().z());
             }
 
             flatMaterials.push_back(gpuMat);
@@ -197,6 +203,9 @@ class BVHFlattener
                 gpuSphere.materialId = flattenMaterial(s->mat); // 把材质拍平记录下标
                 flatSpheres.push_back(gpuSphere);
                 int sphereIdx = (int)flatSpheres.size() - 1;
+
+                // 若是发光球体
+                if (flatMaterials[gpuSphere.materialId].type == 3)  flatLightIndices.push_back(sphereIdx);
 
                 aabb box;
                 node->bounding_box(box);

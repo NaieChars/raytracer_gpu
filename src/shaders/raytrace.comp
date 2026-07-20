@@ -13,9 +13,13 @@ uniform vec3 camOrigin;
 uniform vec3 camLowerLeftCorner;
 uniform vec3 camHorizontal;
 uniform vec3 camVertical;
+uniform vec3 camU;          // 相机右方向单位向量
+uniform vec3 camV;          // 相机上方向单位向量
+uniform float lensRadius;   // 光圈半径,越大虚化越强,0表示完全不虚化(针孔相机)
 
 uniform int bvhRootIndex;   // bvh 根节点索引s
 uniform uint frameCount;    // CPU端每帧递增后传入
+uniform int lightCount;     // 光源数量
 
 //---------------- data struct -----------------
 struct BVHNode 
@@ -59,9 +63,9 @@ struct Material
 layout(std430, binding = 1) readonly buffer BVHBuffer {BVHNode nodes[];};
 layout(std430, binding = 2) readonly buffer SphereBuffer {Sphere spheres[];};
 layout(std430, binding = 3) readonly buffer MaterialBuffer {Material materials[];};
+layout(std430, binding = 4) readonly buffer LightBuffer { int lightIndices[]; };
 
-
-//------------------------ 随机数 --------------------------
+//------------------------ 基本随机数工具函数 --------------------------
 // PCG哈希，输入一个整数种子，输出另一个"随机"整数
 uint pcgHash(uint input_)
 {
@@ -102,8 +106,7 @@ vec2 randomInUnitDisk(inout uint rngState)
     return vec2(r * cos(a), r * sin(a));
 }
 
-
-// ------------------- 核心计算：光线求交----------------------
+// ------------------- 核心计算：光线-球求交----------------------
 // 光线与球体求交
 bool hitSphere(Sphere s, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max, out HitRecord rec)
 {
@@ -131,6 +134,117 @@ bool hitSphere(Sphere s, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max, 
     return true;
 }
 
+
+// ------------------- ONB 工具函数 --------------------------
+struct ONB
+{
+    vec3 u, v, w;
+};
+
+// 围绕normal构建一个正交基,w轴对齐normal方向
+ONB buildONB(vec3 normal)
+{
+    ONB basis;
+    basis.w = normalize(normal);
+    // 选一个不平行w的向量a，来计算叉乘求出另两个分量
+    // 如果w的x分量接近1，那a取(0,1,0)，否则就取(1,0,0)
+    vec3 a = (abs(basis.w.x) > 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    basis.v = normalize(cross(basis.w, a));
+    basis.u = cross(basis.w, basis.v);
+    return basis;
+}
+
+// 把局部坐标p转换到这个正交基所在的世界空间方向
+vec3 onbLocal(ONB basis, vec3 p)
+{
+    return p.x * basis.u + p.y * basis.v + p.z * basis.w;
+}
+
+// ------------------- 光源直接采样 --------------------------
+
+// 在ONB局部空间里,按余弦加权分布采样一个方向(概率正比于cos(theta))
+// 这是Malley's Method:先在圆盘上均匀采样,再投影到半球
+vec3 randomCosineDirection(inout uint rngState)
+{
+    float r1 = randFloat(rngState);
+    float r2 = randFloat(rngState);
+    float phi = 2.0 * PI * r1;
+    float x = cos(phi) * sqrt(r2);
+    float y = sin(phi) * sqrt(r2);
+    float z = sqrt(1.0 - r2);
+    return vec3(x, y, z);
+}
+
+// 给定一个已经采样出来的方向,反过来算它在余弦分布下的概率密度
+// 公式:p(direction) = cos(theta) / pi
+float cosinePdf(vec3 direction, vec3 normal)
+{
+    float cosTheta = dot(normalize(direction), normal);
+    return max(cosTheta, 0.0) / PI;
+}
+
+// 在着色点处生成一个指向球体光源的随机方向，方向被限制在一个锥体内，锥体大小正好覆盖远处光源球
+// distanceSquared：当前着色点与光源球球心的距离平方
+// radius：光源球的半径
+vec3 randomToShpere(float radius, float distanceSquared, inout uint rngState)
+{
+    float r1 = randFloat(rngState);
+    float r2 = randFloat(rngState);
+
+    float z = 1.0 + r2 * (sqrt(max(0.0, 1.0 - radius*radius/distanceSquared)) - 1.0);   // z=cosTheta，z 的方向：大致指向光源球心
+    float phi = 2.0 * 3.14159265 * r1;
+    float sinTheta = sqrt(max(0.0, 1.0 - z * z));
+    float x = cos(phi) * sinTheta;
+    float y = sin(phi) * sinTheta;
+    return vec3(x, y, z);
+}
+
+// 从origin生成一个指向该光源表面的随机方向，用于直接光采样。
+vec3 sampleLightDirection(Sphere light, vec3 origin, inout uint rngState)
+{
+    vec3 direction = light.center - origin;
+    float disSq = dot(direction, direction);
+    ONB basis = buildONB(direction);                                // 构建局部正交基 (ONB)
+    vec3 localDir = randomToShpere(light.radius, disSq, rngState);  // 在锥体内生成本地方向
+    return onbLocal(basis, localDir);                               // 将局部方向变换到世界空间
+}
+
+// 计算"从origin朝direction方向,恰好能打中这个光源球"这件事的立体角概率密度
+// 需要先做一次真实的求交测试,如果这个方向压根打不中球,pdf是0
+float lightPdfValue(Sphere light, vec3 origin, vec3 direction)
+{
+    HitRecord tempRec;
+    if (!hitSphere(light, origin, direction, 0.0001, INF, tempRec))
+        return 0;
+    
+    vec3 toCenterVec = light.center - origin;
+    float disSq = dot(toCenterVec, toCenterVec);
+    float cosThetaMax = sqrt(max(0.0, 1.0 - light.radius * light.radius / disSq)); // cosThetaMax：光源球半顶角的余弦值
+    float solidAngle = 2.0 * PI * (1.0 - cosThetaMax);                              // 球冠立体角公式：Ω = 2π (1 - cosθ)
+    return 1.0 / solidAngle;    // 我们在光源立体角内部采样是均匀采样方向
+}
+
+// 多光源平均 pdf
+// 这里假设"从N个光源里均匀随机选一个"来采样,所以对应的pdf也必须是"对所有光源的pdf取平均"
+float lightsPdfValue(vec3 origin, vec3 direction)
+{
+    if (lightCount == 0) return 0.0;
+    float sum = 0.0;
+    for (int i = 0; i < lightCount; i++)
+    {
+        Sphere light = spheres[lightIndices[i]];
+        sum += lightPdfValue(light, origin, direction);
+    }
+    return sum / float(lightCount);
+}
+
+vec3 sampleRandomLightDirection(vec3 origin, inout uint rngState)
+{
+    int idx = int(randFloat(rngState) * float(lightCount)); // 随机选择一个光源索引
+    idx = min(idx, lightCount - 1);                         // 防止randFloat刚好采到1.0时下标越界
+    Sphere light = spheres[lightIndices[idx]];
+    return sampleLightDirection(light, origin, rngState);
+}
 
 // ------------------------------- BVH ---------------------------------------
 // 包围盒求交，slab方法
@@ -195,7 +309,7 @@ bool traverseBVH(vec3 rayOrigin, vec3 rayDir, float tMin, float tMax, out HitRec
     return hitAnything;
 }
 
-// ------------------------- 散射 --------------------------------
+// ------------------------- 材质散射 --------------------------------
 // 返回值：是否发生散射(dielectric/lambertian/metal理论上总会散射，
 // 但metal在极端角度下反射方向可能指向物体内部，这时候算作被吸收)
 // scatteredDir: 散射后的新射线方向
@@ -206,7 +320,7 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
 
     if (mat.type == 0)
     {
-        // ---- Lambertian ----
+        // ---- Lambertian 最新是采取的PDF混合采样----
         vec3 scatterDir = rec.normal + randomUnitVector(rngState);
         // 退化情况处理：如果随机方向正好和法线反向抵消，方向会变成接近0的向量
         if (length(scatterDir) < 1e-4) scatterDir = rec.normal;
@@ -243,7 +357,8 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
         if (cannotRefract || reflectance > randFloat(rngState)) 
         {
             scatteredDir = reflect(unitDir, rec.normal);
-        } else 
+        } 
+        else 
         {
             scatteredDir = refract(unitDir, rec.normal, refractionRatio);
         }
@@ -255,35 +370,93 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
 vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
 {
     vec3 attenuation = vec3(1.0);
+    vec3 radiance = vec3(0.0);    // 新增:累积收集到的实际亮度
     int maxDepth = 16;
     
     for (int depth = 0; depth < maxDepth; depth++)
     {
         HitRecord rec;
-        if (traverseBVH(rayOrigin, rayDir, 0.0001, INF, rec))
+        if (!traverseBVH(rayOrigin, rayDir, 0.0001, INF, rec))
+            break;
+
+        Material mat = materials[rec.materialId];
+        if (mat.type == 3)
         {
+            // 打中光源本身:把它的自发光乘上路径累积的衰减,计入总亮度,然后终止
+            radiance += attenuation * mat.albedo;
+            break;
+        }
+
+        bool validBounce = true;
+
+        if (mat.type == 1 || mat.type == 2)
+        {
+            // Metal/Dielectric:方向是确定性算出来的镜面/折射方向, 没有"多种采样方式可混合"的概念
             vec3 scatteredDir;
             vec3 matAttenuation;
-            if (scatter(rec, rayDir, rngState, scatteredDir, matAttenuation))
+            if (!scatter(rec, rayDir, rngState, scatteredDir, matAttenuation))
+                validBounce = false;
+            else
             {
                 attenuation *= matAttenuation;
                 rayOrigin = rec.point;
                 rayDir = scatteredDir;
             }
-            else
-            {
-                return vec3(0.0);
-            }
         }
         else
         {
-            vec3 unitDir = normalize(rayDir);
-            float a = 0.5 * (unitDir.y + 1.0);
-            vec3 skyColor = (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0); 
-            return attenuation * skyColor;
+            // ---- mat.type == 0, Lambertian:PDF混合采样在这里发生 ----
+            ONB basis = buildONB(rec.normal);
+            vec3 scatteredDir;
+            
+            if (lightCount > 0 && randFloat(rngState) < 0.5)
+            {
+                // 50%概率:直接朝随机一个光源方向采样(next event estimation,专门去"找光")
+                scatteredDir = sampleRandomLightDirection(rec.point, rngState);
+            }
+            else
+            {
+                scatteredDir = onbLocal(basis, randomCosineDirection(rngState));
+            }
+            scatteredDir = normalize(scatteredDir);
+
+            // 混合pdf:两种采样方式各自的密度按被选中的概率加权相加
+            float cosPdf = cosinePdf(scatteredDir, rec.normal);
+            float pdfVal;
+            if (lightCount > 0) 
+            {
+                float ltsPdf = lightsPdfValue(rec.point, scatteredDir);
+                pdfVal = 0.5 * cosPdf + 0.5 * ltsPdf;
+            } 
+            else 
+                pdfVal = cosPdf;
+
+            if (pdfVal < 1e-6)  // 数值保护,避免除以接近0的数产生inf/NaN
+                validBounce = false;
+            else
+            {
+                float cosTheta = max(dot(scatteredDir, rec.normal), 0.0);
+                vec3 brdf = mat.albedo / PI; // Lambertian BRDF = albedo/pi,能量守恒的标准写法
+                attenuation *= brdf * cosTheta / pdfVal;
+                rayOrigin = rec.point;
+                rayDir = scatteredDir;
+            }
+        }
+        if (!validBounce) break;
+
+        // 前3次反弹(depth<=3)总是保留,因为这几次对画面贡献通常还比较大;
+        // 之后每次反弹,按当前路径衰减了多少(attenuation的最大通道值)算一个存活概率p
+        if (depth > 3)
+        {
+            float p = clamp(max(attenuation.r, max(attenuation.g, attenuation.b)), 0.05, 1.0);
+            if (randFloat(rngState) > p) 
+                break; 
+            attenuation /= p; // 除以存活概率补偿,保证长期期望值不变(无偏估计的关键)
         }
     }
-    return vec3(0.0); // 超过最大深度还没跳出，视为完全吸收
+
+
+    return radiance;
 }
 
 
@@ -299,8 +472,13 @@ void main()
     float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);
     float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
-    vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin);
-    vec3 newSample = rayColor(camOrigin, rayDir, rngState);
+    // 在镜头圆盘上随机采样一个偏移点,模拟真实相机光圈的虚化效果
+    vec2 rd = lensRadius * randomInUnitDisk(rngState);
+    vec3 lensOffset = camU * rd.x + camV * rd.y;
+
+    vec3 rayOrigin = camOrigin + lensOffset;
+    vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - rayOrigin);
+    vec3 newSample = rayColor(rayOrigin, rayDir, rngState);
 
     // 读取之前累积的样本和；第0帧时outputImage里是未初始化的垃圾数据，
     // 所以第0帧不读，直接把newSample当作起始值，避免脏数据污染结果

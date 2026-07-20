@@ -42,4 +42,26 @@ GLuint createMaterialSSBO(const std::vector<GPUMaterial>& material)
     return ssbo;
 }
 
+GLuint createLightSSBO(const std::vector<int>& light, BVHFlattener flattener)
+{
+    GLuint ssbo;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+
+    if (flattener.flatLightIndices.empty())
+    {
+        int dummy = -1;
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int), &dummy, GL_STATIC_DRAW);
+    }
+    else
+    {
+        glBufferData(GL_SHADER_STORAGE_BUFFER, light.size() * sizeof(int), light.data(), GL_STATIC_DRAW);
+    }
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    return ssbo;
+}
+
 #endif

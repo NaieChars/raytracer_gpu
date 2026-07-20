@@ -1,0 +1,25 @@
+#version 430 core 
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba32f, binding = 0) readonly uniform image2D resolvedImage;      // 原始画面(不含bloom)
+layout(rgba32f, binding = 1) readonly uniform image2D blurredBrightImage; // 模糊后的高亮部分
+layout(rgba32f, binding = 2) writeonly uniform image2D finalImage;        // 最终显示结果
+
+uniform float bloomIntensity;   // 控制bloom叠加的强度,0表示完全不叠加
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imgSize = imageSize(resolvedImage);
+    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y) return;
+
+    vec3 base = imageLoad(resolvedImage, pixelCoord).rgb;
+    vec3 bloom = imageLoad(blurredBrightImage, pixelCoord).rgb;
+
+    vec3 hdr = base + bloom * bloomIntensity;
+    vec3 mapped = hdr / (hdr + vec3(1.0));
+
+    // gamma校正
+    vec3 gamma = pow(mapped, vec3(1.0/2.2));
+    imageStore(finalImage, pixelCoord, vec4(gamma, 1.0));
+}
