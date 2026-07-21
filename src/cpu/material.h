@@ -76,14 +76,22 @@ class isotropic : public material
         double sigma_t;    // 消光系数，值越大介质越"浓稠",光线走不了多远就会碰撞
         double scatter_albedo; // 单次散射反照率(0~1),碰撞后有多大概率是"散射"而不是"被吸收"
         double g;              // Henyey-Greenstein各向异性参数,0=各向同性散射,正值偏向前散射,负值偏向后散射
+        double ior;
 
-        isotropic(shared_ptr<texture> a, double sigma_t_ = 1.0, double scatter_albedo_ = 0.9, double g_ = 0.0) 
-            : albedo(a), sigma_t(sigma_t_), scatter_albedo(scatter_albedo_), g(g_) {}
+        isotropic(shared_ptr<texture> a, double sigma_t_ = 1.0, double scatter_albedo_ = 0.9, double g_ = 0.0, double ior_ = 1.5) 
+            : albedo(a), sigma_t(sigma_t_), scatter_albedo(scatter_albedo_), g(g_), ior(ior_) {}
         
-        vec3 get_albedo() const { return albedo->value(0, 0, vec3(0,0,0)); }
+        vec3 get_albedo()
+        { 
+            auto s = std::dynamic_pointer_cast<constant_texture>(albedo);
+            if (s)
+                return s->color;
+            return vec3(0, 1, 1); 
+        }
         double get_sigma_t() const { return sigma_t; }
         double get_scatter_albedo() const { return scatter_albedo; }
         double get_g() const { return g; }
+        double get_ior() const { return ior; }
 };
 
 

@@ -107,12 +107,12 @@ static_assert(sizeof(GPUSphere)  == 32, "GPUSphere must be 32 bytes");
 
 struct GPUMaterial
 {
-    glm::vec3 albedo;   // lambertian/metal 用颜色
-    float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
-    float ir;           // dielectric专用，折射率
-    int type;           // 0=lambertian, 1=metal, 2=dielectric, 3=difuse_light
-    float iorR;         // dielectric专用:红光通道折射率
-    float iorB;         // dielectric专用:蓝光通道折射率
+    glm::vec3 albedo;
+    float fuzz;         // metal专用:模糊度 / isotropic专用(新用法):单次散射反照率scatter_albedo
+    float ir;           // dielectric绿光通道折射率 / isotropic专用(新用法):消光系数sigma_t
+    int type;
+    float iorR;         // dielectric红光通道折射率 / isotropic专用(新用法):各向异性参数g
+    float iorB;         // dielectric蓝光通道折射率(isotropic不使用,保留)
 };
 static_assert(sizeof(GPUMaterial) == 32, "GPUMaterial size mismatch, check alignment");
 
@@ -171,6 +171,15 @@ class BVHFlattener
             {
                 gpuMat.type = 3;
                 gpuMat.albedo = glm::vec3(light->get_emit_color().x(), light->get_emit_color().y(), light->get_emit_color().z());
+            }
+            else if (auto iso = std::dynamic_pointer_cast<isotropic>(mat))
+            {
+                gpuMat.type = 4;
+                gpuMat.albedo = glm::vec3(iso->get_albedo().x(), iso->get_albedo().y(), iso->get_albedo().z());
+                gpuMat.fuzz = (float)iso->get_scatter_albedo(); // 复用字段,存散射反照率
+                gpuMat.ir   = (float)iso->get_sigma_t();          // 复用字段,存消光系数
+                gpuMat.iorR = (float)iso->get_g();                 // 复用字段,存各向异性参数
+                gpuMat.iorB = (float)iso->get_ior(); // 新增:边界折射率
             }
 
             flatMaterials.push_back(gpuMat);

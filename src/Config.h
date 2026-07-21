@@ -2,10 +2,10 @@
 #define CONFIG_H
 
 //---------- Bloom -----------
-#define BLOOMTHRESHOLD      0.5f    // 泛光阈值
+#define BLOOMTHRESHOLD      0.2f    // 泛光阈值
 #define BLOOMRADIUS         1.8f    // 光晕宽度
 #define BLOOMINTENSITY      0.22f   // 泛光强度
-#define BLOOM_DECAY_FACTOR  0.85f   // 泛光衰减
+#define BLOOM_DECAY_FACTOR  1.0f   // 泛光衰减
 
 //---------- 色彩分级 ---------
 #define EXPOSURE            1.0F    // 曝光

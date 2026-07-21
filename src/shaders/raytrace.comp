@@ -47,16 +47,17 @@ struct HitRecord
     float t;
     int materialId;
     bool frontFace; // 折射时用到，光线从内部还是外部打到球
+    int sphereIndex;
 };
 
 struct Material
 {
     vec3 albedo;   // lambertian/metal 用颜色
-    float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
-    float ir;           // dielectric专用，折射率
-    int type;           // 0=lambertian, 1=metal, 2=dielectric
-    float iorR;    // dielectric红光通道折射率
-    float iorB;    // dielectric蓝光通道折射率
+    float fuzz;    // metal:模糊度 | isotropic:单次散射反照率(scatter_albedo)
+    float ir;      // dielectric:绿光折射率 | isotropic:消光系数(sigma_t)
+    int type;      // 0=lambertian, 1=metal, 2=dielectric, 3=diffuse_light, 4=isotropic(体积介质)
+    float iorR;    // dielectric:红光折射率 | isotropic:各向异性参数(g)
+    float iorB;    // dielectric:蓝光折射率 | isotropic(新用法):介质边界折射率,决定表面反光强度
 };
 
 
@@ -135,6 +136,19 @@ bool hitSphere(Sphere s, vec3 rayOrigin, vec3 rayDir, float t_min, float t_max, 
     return true;
 }
 
+// 给定一条已知会命中某个球的光线,计算它穿出这个球体的距离(远交点的t值)
+// 用途:光线已经从球表面进入介质内部,需要知道"如果不发生散射,会在哪里穿出去"
+float sphereFarRoot(Sphere s, vec3 rayOrigin, vec3 rayDir)
+{
+    vec3 oc = rayOrigin - s.center;
+    float a = dot(rayDir, rayDir);
+    float halfB = dot(oc, rayDir);
+    float c = dot(oc, oc) - s.radius * s.radius;
+    float discriminant = halfB * halfB - a * c;
+    if (discriminant < 0.0) return -1.0; // 理论上不该发生(既然已经命中了),防御性返回
+    float sqrtd = sqrt(discriminant);
+    return (-halfB + sqrtd) / a; // 加号对应远交点(出射点)
+}
 
 // ------------------- ONB 工具函数 --------------------------
 struct ONB
@@ -297,6 +311,7 @@ bool traverseBVH(vec3 rayOrigin, vec3 rayDir, float tMin, float tMax, out HitRec
             if (hitSphere(spheres[sIdx], rayOrigin, rayDir, tMin, closestSoFar, tempRec))
             {
                 closestSoFar = tempRec.t;
+                tempRec.sphereIndex = sIdx;
                 rec = tempRec;
                 hitAnything = true;
             }
@@ -384,7 +399,7 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
     }
 }
 
-// ----------------------- Draw! ---------------------------
+// ----------------------- 光线递进循环核心 ---------------------------
 vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
 {
     vec3 attenuation = vec3(1.0);
@@ -419,6 +434,100 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
                 attenuation *= matAttenuation;
                 rayOrigin = rec.point;
                 rayDir = scatteredDir;
+            }
+        }
+        else if (mat.type == 4)
+        {
+            // ---- Isotropic 体积介质,宝石版本:先做表面菲涅尔反射/折射判定 ----
+            vec3 unitDir = normalize(rayDir);
+            float cosTheta = min(dot(-unitDir, rec.normal), 1.0);
+            float iorBoundary = max(mat.iorB, 1.01); // 边界折射率,防止<=1导致数值异常
+
+            // Schlick近似,和你Day26给dielectric写的公式完全一样,这里复用同样的思路
+            float r0 = (1.0 - iorBoundary) / (1.0 + iorBoundary);
+            r0 = r0 * r0;
+            float reflectance = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+
+            if (randFloat(rngState) < reflectance)
+            {
+                // ---- 表面反射:这一步就是"宝石感"的来源,光线在曲面上产生锐利高光 ----
+                vec3 reflected = reflect(unitDir, rec.normal);
+                rayOrigin = rec.point + rec.normal * 0.001;
+                rayDir = reflected;
+                // 不修改attenuation:表面反射本身不吸收/染色光线,和dielectric反射分支处理方式一致
+            }
+            else
+            {
+                // ---- 折射进入介质:先算出折射方向,再用这个方向开始内部随机游走 ----
+                vec3 refractedDir = refract(unitDir, rec.normal, 1.0 / iorBoundary);
+
+                Sphere mediumSphere = spheres[rec.sphereIndex];
+                float sigma_t = max(mat.ir, 0.001);
+                float scatterAlbedo = clamp(mat.fuzz, 0.0, 1.0);
+                float g = clamp(mat.iorR, -0.99, 0.99);
+
+                vec3 mediumPos = rec.point;
+                vec3 mediumDir = refractedDir; // 关键改动:用折射方向而不是原始rayDir作为介质内传播方向
+
+                float distToExit = sphereFarRoot(mediumSphere, mediumPos, mediumDir);
+                if (distToExit < 0.0) distToExit = mediumSphere.radius * 2.0;
+
+                bool exitedMedium = false;
+                bool absorbed = false;
+                int maxMediumBounces = 24;
+
+                for (int mBounce = 0; mBounce < maxMediumBounces; mBounce++)
+                {
+                    float freeFlight = -log(1.0 - randFloat(rngState)) / sigma_t;
+                    if (freeFlight >= distToExit)
+                    {
+                        mediumPos = mediumPos + mediumDir * distToExit;
+                        exitedMedium = true;
+                        break;
+                    }
+
+                    mediumPos = mediumPos + mediumDir * freeFlight;
+                    distToExit -= freeFlight;
+                    attenuation *= mat.albedo;
+
+                    if (randFloat(rngState) > scatterAlbedo)
+                    {
+                        absorbed = true;
+                        break;
+                    }
+
+                    float u1 = randFloat(rngState);
+                    float u2 = randFloat(rngState);
+                    float cosThetaP;
+                    if (abs(g) < 1e-3)
+                    {
+                        cosThetaP = 1.0 - 2.0 * u1;
+                    }
+                    else
+                    {
+                        float sqrTerm = (1.0 - g * g) / (1.0 + g - 2.0 * g * u1);
+                        cosThetaP = (1.0 + g * g - sqrTerm * sqrTerm) / (2.0 * g);
+                    }
+                    float sinThetaP = sqrt(max(0.0, 1.0 - cosThetaP * cosThetaP));
+                    float phi = 2.0 * PI * u2;
+
+                    ONB scatterBasis = buildONB(mediumDir);
+                    vec3 localDir = vec3(sinThetaP * cos(phi), sinThetaP * sin(phi), cosThetaP);
+                    mediumDir = normalize(onbLocal(scatterBasis, localDir));
+
+                    distToExit = sphereFarRoot(mediumSphere, mediumPos, mediumDir);
+                    if (distToExit < 0.0) distToExit = mediumSphere.radius * 2.0;
+                }
+
+                if (absorbed || !exitedMedium)
+                {
+                    validBounce = false;
+                }
+                else
+                {
+                    rayOrigin = mediumPos + mediumDir * 0.001;
+                    rayDir = mediumDir;
+                }
             }
         }
         else
