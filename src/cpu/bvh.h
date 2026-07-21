@@ -111,7 +111,8 @@ struct GPUMaterial
     float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
     float ir;           // dielectric专用，折射率
     int type;           // 0=lambertian, 1=metal, 2=dielectric, 3=difuse_light
-    float pad0, pad1;
+    float iorR;         // dielectric专用:红光通道折射率
+    float iorB;         // dielectric专用:蓝光通道折射率
 };
 static_assert(sizeof(GPUMaterial) == 32, "GPUMaterial size mismatch, check alignment");
 
@@ -158,7 +159,13 @@ class BVHFlattener
             else if (auto diel = std::dynamic_pointer_cast<dielectric>(mat))
             {
                 gpuMat.type = 2;
-                gpuMat.ir = (float)diel->refraction_index;
+                float baseIor = (float)diel->refraction_index;
+
+                // 色散强度:数值越大,彩虹分离效果越明显,这是艺术化近似,不是严格物理值
+                float dispersionStrength = 0.02f;
+                gpuMat.ir   = baseIor;                              // 绿光通道,基准折射率
+                gpuMat.iorR = baseIor - dispersionStrength;          // 红光偏折最少,折射率最低
+                gpuMat.iorB = baseIor + dispersionStrength * 1.5f;   // 蓝光偏折最多,折射率最高(现实中蓝紫光确实偏折更多)
             }
             else if (auto light = std::dynamic_pointer_cast<diffuse_light>(mat))
             {

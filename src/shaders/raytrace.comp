@@ -55,7 +55,8 @@ struct Material
     float fuzz;         // metal专用，紧跟在albedo后面，卡进vec3的对齐空当
     float ir;           // dielectric专用，折射率
     int type;           // 0=lambertian, 1=metal, 2=dielectric
-    float pad0, pad1;
+    float iorR;    // dielectric红光通道折射率
+    float iorB;    // dielectric蓝光通道折射率
 };
 
 
@@ -340,7 +341,22 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
     else
     {
         // ---- Dielectric(玻璃) ----
-        attenuation = vec3(1.0); // 玻璃不吸收颜色
+        // 随机选一个颜色通道(R/G/B各1/3概率),这条光路接下来只携带这个通道的信息
+        float channelChoice = randFloat(rngState);
+        float iorChannel;
+        vec3 channelMask; // 乘3是为了补偿"只有1/3概率被选中"这件事,保持长期期望值不变(和轮盘赌的补偿原理一致)
+
+        if (channelChoice < 1.0 / 3.0) {
+            iorChannel = mat.iorR;
+            channelMask = vec3(3.0, 0.0, 0.0);
+        } else if (channelChoice < 2.0 / 3.0) {
+            iorChannel = mat.ir; // 绿光复用原有的ir字段
+            channelMask = vec3(0.0, 3.0, 0.0);
+        } else {
+            iorChannel = mat.iorB;
+            channelMask = vec3(0.0, 0.0, 3.0);
+        }
+
         float refractionRatio = rec.frontFace ? (1.0 / mat.ir) : mat.ir;
 
         vec3 unitDir = normalize(rayDir);
@@ -357,10 +373,12 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
         if (cannotRefract || reflectance > randFloat(rngState)) 
         {
             scatteredDir = reflect(unitDir, rec.normal);
+            attenuation = vec3(1.0);
         } 
         else 
         {
             scatteredDir = refract(unitDir, rec.normal, refractionRatio);
+            attenuation = channelMask;
         }
         return true;
     }

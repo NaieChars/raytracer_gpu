@@ -41,6 +41,19 @@ hittable_list createScene()
             make_shared<diffuse_light>(make_shared<constant_texture>(warmYellow))));
     }
 
+    // 金属球周边的发光粒子
+    int numspectical = 15;
+    for (int i = 0; i < numspectical; i++) {
+        float x = random_double(-1.0, 1.0);
+        float y = random_double(-1.0, -0.9);
+        float z = random_double(-3.0, -1.5);
+        float radius = random_double(0.005, 0.01);
+        vec3 warmYellow = vec3(1.0, 0.85, 0.4) * 16.0;
+        world.add(make_shared<sphere>(
+            vec3(x, y, z), radius,
+            make_shared<diffuse_light>(make_shared<constant_texture>(warmYellow))));
+    }
+
     // 视觉锚点:一个大金属球,近似对焦点位置,方便待会儿观察景深虚化效果
     world.add(make_shared<sphere>(
         vec3(0, -0.3, -2.2), 0.6f,
@@ -50,5 +63,7 @@ hittable_list createScene()
 
     return world;
 }
+
+
 
 #endif

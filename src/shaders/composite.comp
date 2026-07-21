@@ -7,6 +7,35 @@ layout(rgba32f, binding = 2) writeonly uniform image2D finalImage;        // 最
 
 uniform float bloomIntensity;   // 控制bloom叠加的强度,0表示完全不叠加
 
+// ---- 新增:色调映射与色彩分级参数 ----
+uniform float exposure;      // 曝光,1.0为不变,>1整体变亮,<1整体变暗
+uniform float contrast;      // 对比度,1.0为不变,>1对比更强(暗更暗亮更亮),<1对比更平
+uniform float saturation;    // 饱和度,1.0为不变,0完全灰度,>1色彩更艳丽
+uniform vec3  colorBalance;  // 色彩平衡/滤镜色调,RGB各通道独立缩放,(1,1,1)为不变
+
+// ACES Filmic色调映射曲线,Narkowicz 2015拟合版本,业界最常用的简化实现,
+// 输入是任意范围的HDR线性颜色值,输出被压缩进[0,1],高光区域会有自然的"肩部"过渡而不是硬截断
+vec3 acesToneMap(vec3 x) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// 对比度调整:围绕0.5这个中间灰度值做缩放,高于0.5的部分被推得更亮,低于的更暗
+vec3 applyContrast(vec3 color, float amount) {
+    return (color - 0.5) * amount + 0.5;
+}
+
+// 饱和度调整:先算出这个颜色的灰度(亮度)值,再在"完全灰度"和"原始颜色"之间插值
+vec3 applySaturation(vec3 color, float amount) {
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    return mix(vec3(luminance), color, amount);
+}
+
+
 void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
@@ -17,9 +46,21 @@ void main()
     vec3 bloom = imageLoad(blurredBrightImage, pixelCoord).rgb;
 
     vec3 hdr = base + bloom * bloomIntensity;
-    vec3 mapped = hdr / (hdr + vec3(1.0));
+    // 2. 曝光调整,在色调映射之前进行,因为曝光本质是"改变有多少光进入相机",
+    //    属于HDR线性空间的操作,顺序放错(比如放到tonemap后面)会让效果不符合物理直觉
+    hdr *= exposure;
+    // 3. ACES色调映射:HDR压缩进[0,1],此后color就是LDR(低动态范围)空间了
+    vec3 color = acesToneMap(hdr);
+    // 4. 对比度、饱和度、色彩平衡:这几步都是在LDR空间做的艺术化调整,
+    //    顺序是对比度->饱和度->色彩平衡,这是比较符合调色直觉的顺序
+    color = applyContrast(color, contrast);
+    color = applySaturation(color, saturation);
+    color *= colorBalance;
 
-    // gamma校正
-    vec3 gamma = pow(mapped, vec3(1.0/2.2));
-    imageStore(finalImage, pixelCoord, vec4(gamma, 1.0));
+    // 5. gamma编码:把线性颜色值转换成显示器期望的sRGB空间,
+    //    这里换成精确的pow(1/2.2),替代Day27用的sqrt近似写法
+    color = clamp(color, vec3(0.0), vec3(1.0));
+    color = pow(color, vec3(1.0 / 2.2));
+
+    imageStore(finalImage, pixelCoord, vec4(color, 1.0));
 }

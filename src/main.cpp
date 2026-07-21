@@ -208,6 +208,12 @@ int main()
         glBindImageTexture(1, brightTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
         glBindImageTexture(2, finalTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
         compositeProgram.setFloat("bloomIntensity", BLOOMINTENSITY); 
+        //
+        compositeProgram.setFloat("exposure", EXPOSURE);      // 先从1.0开始,觉得整体偏暗/偏亮再调
+        compositeProgram.setFloat("contrast", CONTRAST);       // 轻微增强对比度,让画面更有"厚重感"
+        compositeProgram.setFloat("saturation", SATURATION);    // 轻微提高饱和度,配合"星海"场景的梦幻感
+        compositeProgram.setVec3("colorBalance", COLORBALANCE_R, COLORBALANCE_G, COLORBALANCE_B); // 轻微偏冷调,蓝色通道略增强,可选的电影感做法
+
         glDispatchCompute(groupsX, groupsY, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
