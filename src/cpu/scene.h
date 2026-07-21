@@ -34,7 +34,7 @@ hittable_list createScene()
         float x = random_double(-4.0, 4.0);
         float y = random_double(-1.0, 2.5);
         float z = random_double(-5.0, -1.0);
-        float radius = random_double(0.03, 0.07);
+        float radius = random_double(0.01, 0.05);
         vec3 warmYellow = vec3(1.0, 0.85, 0.4) * 32.0;
         world.add(make_shared<sphere>(
             vec3(x, y, z), radius,

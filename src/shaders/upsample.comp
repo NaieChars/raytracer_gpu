@@ -6,6 +6,7 @@ layout(rgba32f, binding = 0) uniform image2D dstImage;  // 读写模式
 uniform sampler2D srcTex;   // 分辨率更小的图
 uniform vec2 srcTexelSize;
 uniform float bloomRadius; // 控制光晕扩散范围,1.0是标准值,调大会让光晕更"糊"
+uniform float decay;
 
 // 3x3 tent filter升采样,中心权重最高、向外递减,形成柔和的过渡而不是生硬的边界
 vec3 upsampleTent(vec2 uv) {
@@ -37,5 +38,5 @@ void main()
     // dstImage此时存的是"这一级降采样时保留的原始高亮细节",
     // 加上"从更小一级传上来的、更大范围的柔光",两者叠加才是分层Bloom的精髓
     vec3 existing = imageLoad(dstImage, pixelCoord).rgb;
-    imageStore(dstImage, pixelCoord, vec4(existing + upsampled, 1.0));
+    imageStore(dstImage, pixelCoord, vec4(existing + upsampled * decay, 1.0));
 }

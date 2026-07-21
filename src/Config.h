@@ -2,8 +2,9 @@
 #define CONFIG_H
 
 //---------- Bloom -----------
-#define BLOOMTHRESHOLD      1.0f
-#define BLOOMRADIUS         0.8f
-#define BLOOMINTENSITY      0.03f
+#define BLOOMTHRESHOLD      0.5f    // 泛光阈值
+#define BLOOMRADIUS         1.8f    // 光晕宽度
+#define BLOOMINTENSITY      0.22f   // 泛光强度
+#define BLOOM_DECAY_FACTOR  0.85f   // 泛光衰减
 
 #endif

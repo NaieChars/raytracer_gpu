@@ -185,6 +185,8 @@ int main()
             GLuint dstTex = (level == 1) ? brightTexture : bloomMips.textures[level - 1];
             int dstW = (level == 1) ? SCR_WIDTH  : bloomMips.widths[level - 1];
             int dstH = (level == 1) ? SCR_HEIGHT : bloomMips.heights[level - 1];
+            float layerWeight = pow(BLOOM_DECAY_FACTOR, (float)(level - 1)); 
+            upsampleProgram.setFloat("decay", layerWeight);
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, bloomMips.textures[level]);
