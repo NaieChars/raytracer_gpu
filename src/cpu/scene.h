@@ -15,7 +15,7 @@ hittable_list createScene()
         )
     );
 
-    // 大量小玻璃珠,随机分布在一片椭球空间里,营造悬浮的星尘感
+    // 大量小玻璃珠,随机分布在一片椭球空间里
     int numGlassBeads = 150;
     for (int i = 0; i < numGlassBeads; i++) {
         float x = random_double(-4.0, 4.0);
@@ -30,8 +30,7 @@ hittable_list createScene()
     vec3 WholeLight = vec3(1.0, 0.88, 0.65)*3.9f;
     world.add(make_shared<sphere>(vec3(-10, 20, -25), 4.0f, make_shared<diffuse_light>(make_shared<constant_texture>(WholeLight))));
 
-    // 掺杂的暖黄色小光球,数量少一些,起点缀星光的作用
-    // 颜色乘了个4倍增强发光强度,因为场景里没有环境光/天空光源,
+    // 掺杂的暖黄色小光球
     // 全靠这些小球自己发光撑起整个画面亮度,不增强的话太暗
     int numLights = 20;
     for (int i = 0; i < numLights; i++) {
@@ -70,10 +69,10 @@ hittable_list createScene()
     // 一个发光雾团玻璃珠
     world.add(make_shared<sphere>(vec3(0, -0.8, -1.8), 0.1f,make_shared<isotropic>(
         make_shared<constant_texture>(vec3(1.0, 0.549, 0.0)), // 淡粉色雾
-        0.5,                                                // sigma_t: 消光系数,数值越大雾越"浓",光线穿透越费劲
-        1.7,                                               // scatter_albedo: 散射反照率,越接近1雾越亮越透,越接近0越像吸光的暗色玻璃
-        0.3,                                                // g: 各向异性,先用0(各向同性)测试,之后可以试试0.3左右看前向散射的效果差异
-        1.8                                                 // ior: 边界折射率,数值越高表面反光越强
+        0.5,                                               
+        1.7,                                               
+        0.3,                                                
+        1.8                                                 
     )
 ));
 
@@ -186,18 +185,18 @@ hittable_list createScene1() {
 
     world.add(make_shared<sphere>(vec3(-1.4, 0.35, -0.4), 0.1f,make_shared<isotropic>(
         make_shared<constant_texture>(vec3(0.65, 0.25, 0.03)), // 深蓝
-        3,                                                // sigma_t: 消光系数,数值越大雾越"浓",光线穿透越费劲
-        0.9,                                               // scatter_albedo: 散射反照率,越接近1雾越亮越透,越接近0越像吸光的暗色玻璃
-        0.3,                                                // g: 各向异性,先用0(各向同性)测试,之后可以试试0.3左右看前向散射的效果差异
-        1.8                                                 // ior: 边界折射率,数值越高表面反光越强
+        3,                                                // sigma_t: 消光系数,数值越大光线穿透越费劲
+        0.9,                                               // scatter_albedo: 散射反照率,越接近1雾越亮越透
+        0.3,                                                // g: 各向异性
+        1.8                                                 // ior: 边界折射率
     )));
 
     world.add(make_shared<sphere>(vec3(-1.1, 0.31, -0.4), 0.06f,make_shared<isotropic>(
         make_shared<constant_texture>(vec3(0.65, 0.25, 0.03)), // 深蓝
-        3,                                                // sigma_t: 消光系数,数值越大雾越"浓",光线穿透越费劲
-        0.9,                                               // scatter_albedo: 散射反照率,越接近1雾越亮越透,越接近0越像吸光的暗色玻璃
-        0.3,                                                // g: 各向异性,先用0(各向同性)测试,之后可以试试0.3左右看前向散射的效果差异
-        1.8                                                 // ior: 边界折射率,数值越高表面反光越强
+        3,                                                
+        0.9,                                               
+        0.3,                                              
+        1.8                                            
     )));
 
     world.add(make_shared<sphere>(vec3(-0.6, 0.4, -0.6), 0.2f,make_shared<metal>(vec3(0.9, 0.9, 0.95), 0.05)));

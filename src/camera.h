@@ -44,17 +44,17 @@ public:
     bool dofEnabled = true;    // 景深开关状态
     float savedAperture;       // 关闭时,把aperture存起来,方便重新开启时恢复原来的虚化强度
 
-    // 切换景深开关;调用一次就切换一次状态,边缘触发的判断放在调用方(main.cpp)做
+    // 切换景深开关;
     void toggleDOF() {
         if (dofEnabled) {
             savedAperture = aperture;
-            aperture = 0.0f;   // 光圈为0,等价于针孔相机,完全无虚化
+            aperture = 0.0f;   // 光圈为0
             dofEnabled = false;
         } else {
             aperture = savedAperture;
             dofEnabled = true;
         }
-        moved = true; // 景深参数变了,画面会不一样,需要重置累积重新收敛
+        moved = true; 
     }
     void markMoved() {
         moved = true;
@@ -114,14 +114,12 @@ public:
         moved = true;
     }
 
-    // 算出GPU端raytrace.comp需要的全部相机uniform值,一次性算好通过引用返回
     void getGPUParams(float aspectRatio,
                        glm::vec3& outOrigin, glm::vec3& outLowerLeftCorner,
                        glm::vec3& outHorizontal, glm::vec3& outVertical,
                        glm::vec3& outU, glm::vec3& outV, float& outLensRadius) const
     {
         // 如果启用了自动跟焦,每次调用都重新算一次当前相机位置到目标点的距离,
-        // 这样即使相机在移动,焦平面也会实时跟着目标点走
         if (useFocusTarget) {
             const_cast<Camera*>(this)->focusDist = glm::length(focusTarget - position);
         }
@@ -142,7 +140,7 @@ public:
         outLensRadius = aperture / 2.0f;
     }
 
-    // 检查相机这一帧是否移动过;调用后自动清零标记,main.cpp用它决定要不要重置frameCount
+    // 检查相机这一帧是否移动过;调用后自动清零标记
     bool consumeMovedFlag() {
         bool result = moved;
         moved = false;
@@ -154,7 +152,6 @@ private:
     bool firstMouse;
     float lastMouseX, lastMouseY;
 
-    // 用yaw/pitch重新算front方向,和之前自由函数版本公式完全一致
     void updateCameraVectors() {
         glm::vec3 f;
         f.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));

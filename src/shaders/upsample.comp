@@ -34,9 +34,6 @@ void main()
     vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(dstSize);
     vec3 upsampled = upsampleTent(uv);  // 从低分辨率提取出来的更大范围的光晕，并升到当前粉分辨率
 
-    // 关键:不是覆盖,是叠加到dstImage原有内容上
-    // dstImage此时存的是"这一级降采样时保留的原始高亮细节",
-    // 加上"从更小一级传上来的、更大范围的柔光",两者叠加才是分层Bloom的精髓
     vec3 existing = imageLoad(dstImage, pixelCoord).rgb;
     imageStore(dstImage, pixelCoord, vec4(existing + upsampled * decay, 1.0));
 }

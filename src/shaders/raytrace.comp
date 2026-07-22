@@ -466,7 +466,7 @@ bool scatter(HitRecord rec, vec3 rayDir, inout uint rngState, out vec3 scattered
 vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
 {
     vec3 attenuation = vec3(1.0);
-    vec3 radiance = vec3(0.0);    // 新增:累积收集到的实际亮度
+    vec3 radiance = vec3(0.0);    // 累积收集到的实际亮度
     int maxDepth = 16;
     
     for (int depth = 0; depth < maxDepth; depth++)
@@ -490,7 +490,6 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
 
         if (mat.type == 1 || mat.type == 2)
         {
-            // Metal/Dielectric:方向是确定性算出来的镜面/折射方向, 没有"多种采样方式可混合"的概念
             vec3 scatteredDir;
             vec3 matAttenuation;
             if (!scatter(rec, rayDir, rngState, scatteredDir, matAttenuation))
@@ -504,7 +503,7 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
         }
         else if (mat.type == 4)
         {
-            // ---- Isotropic 体积介质,宝石版本:先做表面菲涅尔反射/折射判定 ----
+            // ---- Isotropic 体积介质 -------
             vec3 unitDir = normalize(rayDir);
             float cosTheta = min(dot(-unitDir, rec.normal), 1.0);
             float iorBoundary = max(mat.iorB, 1.01); // 边界折射率,防止<=1导致数值异常
@@ -516,11 +515,10 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
 
             if (randFloat(rngState) < reflectance)
             {
-                // ---- 表面反射:这一步就是"宝石感"的来源,光线在曲面上产生锐利高光 ----
+                // ---- 表面反射----
                 vec3 reflected = reflect(unitDir, rec.normal);
                 rayOrigin = rec.point + rec.normal * 0.001;
                 rayDir = reflected;
-                // 不修改attenuation:表面反射本身不吸收/染色光线,和dielectric反射分支处理方式一致
             }
             else
             {
@@ -533,7 +531,7 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
                 float g = clamp(mat.iorR, -0.99, 0.99);
 
                 vec3 mediumPos = rec.point;
-                vec3 mediumDir = refractedDir; // 关键改动:用折射方向而不是原始rayDir作为介质内传播方向
+                vec3 mediumDir = refractedDir; //用折射方向而不是原始rayDir作为介质内传播方向
 
                 float distToExit = sphereFarRoot(mediumSphere, mediumPos, mediumDir);
                 if (distToExit < 0.0) distToExit = mediumSphere.radius * 2.0;
@@ -670,8 +668,8 @@ void main()
     vec3 targetPoint = camLowerLeftCorner + u * camHorizontal + v * camVertical;
     float distToTarget = length(targetPoint - camOrigin);
 
-    // focusRangeTolerance:在这个距离容忍区间内,完全不做虚化(哪怕理论上不在精确焦平面上)
-    // 超出这个容忍区间的部分,虚化强度按超出量线性增长,而不是从0开始就线性增长
+    // focusRangeTolerance:在这个距离容忍区间内,完全不做虚化
+    // 超出这个容忍区间的部分,虚化强度按超出量线性增长
     float distFromFocus = abs(distToTarget - focusDist);
     float effectiveLensRadius = 0.0;
     if (distFromFocus > focusRangeTolerance) {

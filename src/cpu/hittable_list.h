@@ -69,7 +69,6 @@ class box : public hittable {
     box(const vec3& p0, const vec3& p1, shared_ptr<material> m)
     : box_min(p0), box_max(p1), mat_ptr(m) {}
     
-    // Slab Method:和你GPU端aabbHit的思路完全一致,只是这次要多算出"命中的是哪个轴/哪个面"来确定法线
     bool hit(const vec3& rayOrigin, const vec3& rayDir, double t_min, double t_max, hit_record& rec) const override
     {
         double t0 = t_min, t1 = t_max;
@@ -86,7 +85,7 @@ class box : public hittable {
             double invD = 1.0 / dir[axis];
             double tNear = (bmin[axis] - origin[axis]) * invD;
             double tFar  = (bmax[axis] - origin[axis]) * invD;
-            double sign = -1.0; // 默认:从min面进入,法线朝负方向
+            double sign = -1.0; // 默认从min面进入,法线朝负方向
             
             if (invD < 0.0) { std::swap(tNear, tFar); sign = 1.0; }
             
@@ -104,8 +103,6 @@ class box : public hittable {
         n[hitAxis] = hitSign;
         vec3 outward_normal(n[0], n[1], n[2]);
         
-        // 如果你的hit_record有set_face_normal这个辅助方法(RTIOW标准写法),直接用;
-        // 如果你的版本没有这个方法,把下面两行换成你sphere.h里手动判断front_face的写法
         rec.set_face_normal(rayOrigin, rayDir, outward_normal);
         rec.mat = mat_ptr;
         return true;

@@ -73,7 +73,7 @@ class isotropic : public material
 {
     public:
         shared_ptr<texture> albedo;
-        double sigma_t;    // 消光系数，值越大介质越"浓稠",光线走不了多远就会碰撞
+        double sigma_t;         // 消光系数，值越大介质越"浓稠",光线走不了多远就会碰撞
         double scatter_albedo; // 单次散射反照率(0~1),碰撞后有多大概率是"散射"而不是"被吸收"
         double g;              // Henyey-Greenstein各向异性参数,0=各向同性散射,正值偏向前散射,负值偏向后散射
         double ior;
