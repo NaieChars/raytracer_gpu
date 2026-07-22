@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include "Shader.h"
+#include "camera.h"
 #include "debug.h"
 #include "cpu/scene.h"
 #include "cpu/gpu_buffer.h"
@@ -20,6 +21,9 @@ const int SCR_HEIGHT = 600;
 #include <iostream>
 #include <vector>
 
+Camera camera;
+
+void mouseCallback(GLFWwindow* window, double xpos, double ypos);
 
 int main()
 {
@@ -49,11 +53,15 @@ int main()
         return -1;
     }
 
-    
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetWindowUserPointer(window, &camera); // 把camera对象"挂"到窗口上,回调里才能取到
+    glfwSetCursorPosCallback(window, mouseCallback);
+
+    /*
     glEnable(GL_DEBUG_OUTPUT);
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS); // 让错误发生在调用处，便于定位
     glDebugMessageCallback(debugCallback, nullptr);
-    
+    */
 
     // ----------------- 没有绑定VAO的 glDrawArrays不会执行，所以我们仍要绑定一个 VAO，哪怕根本不用顶点属性
     GLuint dummyVAO;
@@ -81,49 +89,70 @@ int main()
 
 
     //----------- 场景构建---------------
-    hittable_list world = createScene();
+    hittable_list world = createScene1();
 
     //----------- 构建BVH ---------------
     auto bvh = make_shared<bvh_node>(world.objects, 0, world.objects.size());
     //----------- flatten --------------
     BVHFlattener flattener;
     int rootIndex = flattener.flatten(bvh);
+    std::cout << "flatSpheres: " << flattener.flatSpheres.size()
+          << ", flatBoxes: " << flattener.flatBoxes.size()
+          << ", flatNodes: " << flattener.flatNodes.size() << "\n";
     //----------- 上传 GPU --------------
     createBVHSSBO(flattener.flatNodes);
     createShereSSBO(flattener.flatSpheres);
     createMaterialSSBO(flattener.flatMaterials);
     createLightSSBO(flattener.flatLightIndices, flattener);
+    createBoxSSBO(flattener.flatBoxes);
+
+
+    camera.setFocusTarget(glm::vec3(-0.925f, 0.45f, -0.675f)); // 两个主体球的中点
 
     uint32_t frameCount = 0;
+    float lastFrameTime = 0.0f;
+    bool fKeyWasPressed = false;
     while (!glfwWindowShouldClose(window)) 
     {   
-        // 相机参数
+        float currentFrameTime = (float)glfwGetTime();
+        float deltaTime = currentFrameTime - lastFrameTime;
+        lastFrameTime = currentFrameTime;
+
+        camera.processKeyboard(window, deltaTime);
+        // F键切换景深开关,边缘触发:只在"刚按下"那一帧生效,避免按住不放时每帧反复横跳
+        bool fKeyIsPressed = (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS);
+        if (fKeyIsPressed && !fKeyWasPressed) {
+            camera.toggleDOF();
+        }
+        fKeyWasPressed = fKeyIsPressed;
+
+        // ] [ 键调节光圈大小
+        if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS) {
+            camera.aperture += 0.002f;
+            camera.markMoved();
+        }
+        if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS) {
+            camera.aperture = std::max(0.0f, camera.aperture - 0.002f);
+            camera.markMoved();
+        }
+
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+            glfwSetWindowShouldClose(window, true);
+        
+
+        // ---------- 相机参数,一次调用拿到GPU需要的全部值 ----------
+        glm::vec3 origin, lowerLeftCorner, horizontal, vertical, u, v;
+        float lensRadius;
         float aspectRatio = float(SCR_WIDTH) / float(SCR_HEIGHT);
-        // 相机的位置与朝向,可以根据场景自由调整
-        glm::vec3 lookFrom(0.0f, 0.5f, 1.0f);
-        glm::vec3 lookAt(0.0f, 0.0f, -2.2f);            // 对准金属锚点球所在位置
-        glm::vec3 vup(0.0f, 1.0f, 0.0f);
-        float fovDegrees = 50.0f;                       // 视场角,数值越大看到的范围越广
-        float aperture = 0.2f;                         // 光圈大小,数值越大虚化越强
-        float focusDist = glm::length(lookFrom - lookAt); // 对焦距离:自动对准lookAt所在平面
-        // 相机的三个正交轴,w是"往后看"的方向,u是右方向,v是上方向
-        glm::vec3 w = glm::normalize(lookFrom - lookAt);
-        glm::vec3 u = glm::normalize(glm::cross(vup, w));
-        glm::vec3 v = glm::cross(w, u);
-        
-        float theta = glm::radians(fovDegrees);
-        float halfHeight = tan(theta / 2.0f);
-        float halfWidth = aspectRatio * halfHeight;
-        
-        glm::vec3 origin = lookFrom;
-        glm::vec3 lowerLeftCorner = origin - halfWidth * focusDist * u - halfHeight * focusDist * v - focusDist * w;
-        glm::vec3 horizontal = 2.0f * halfWidth * focusDist * u;
-        glm::vec3 vertical = 2.0f * halfHeight * focusDist * v;
-        float lensRadius = aperture / 2.0f;
-        
-        // ---------------------- 光追累计采样 --------------------------
+        camera.getGPUParams(aspectRatio, origin, lowerLeftCorner, horizontal, vertical, u, v, lensRadius);
+
+        if (camera.consumeMovedFlag()) {
+            frameCount = 0;
+        }
+
         raytraceProgram.use();
         glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
         raytraceProgram.setVec3("camOrigin", origin.x, origin.y, origin.z);
         raytraceProgram.setVec3("camHorizontal", horizontal.x, horizontal.y, horizontal.z);
         raytraceProgram.setVec3("camVertical", vertical.x, vertical.y, vertical.z);
@@ -131,6 +160,8 @@ int main()
         raytraceProgram.setVec3("camU", u.x, u.y, u.z);
         raytraceProgram.setVec3("camV", v.x, v.y, v.z);
         raytraceProgram.setFloat("lensRadius", lensRadius);
+        raytraceProgram.setFloat("focusDist", camera.focusDist);
+        raytraceProgram.setFloat("focusRangeTolerance", 0.2f);
 
         raytraceProgram.setInt("bvhRootIndex", rootIndex);
         raytraceProgram.setUint("frameCount", (int)frameCount);
@@ -235,3 +266,9 @@ int main()
     glfwTerminate();
     return 0;
 }
+
+void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
+    Camera* cam = static_cast<Camera*>(glfwGetWindowUserPointer(window));
+    if (cam) cam->processMouseMovement((float)xpos, (float)ypos);
+}
+

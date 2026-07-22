@@ -60,123 +60,75 @@ class hittable_list : public hittable
 };
 
 
-/*
-class xy_rect : public hittable
-{
+
+
+// 立方体实例
+class box : public hittable {
     public:
-    shared_ptr<material> mp;
-    double x0, x1, y0, y1, k;
-
-    xy_rect() {}
-    xy_rect(double _x0, double _x1, double _y0, double _y1, double _k, shared_ptr<material> mat)
-    : x0(_x0), x1(_x1), y0(_y0), y1(_y1), k(_k), mp(mat) {}
-
-    // 判断光线是否击中矩形光源
-    bool hit(const ray& r, double t0, double t1, hit_record& rec) const override
+    box() {}
+    box(const vec3& p0, const vec3& p1, shared_ptr<material> m)
+    : box_min(p0), box_max(p1), mat_ptr(m) {}
+    
+    // Slab Method:和你GPU端aabbHit的思路完全一致,只是这次要多算出"命中的是哪个轴/哪个面"来确定法线
+    bool hit(const vec3& rayOrigin, const vec3& rayDir, double t_min, double t_max, hit_record& rec) const override
     {
-        auto t = (k-r.origin().z()) / r.direction().z();
-        if (t < t0 || t > t1)
-            return false;
-        auto x = r.origin().x() + t*r.direction().x();
-        auto y = r.origin().y() + t*r.direction().y();
-        if (x < x0 || x > x1 || y < y0 || y > y1)
-            return false;
-
-        rec.u = (x-x0)/(x1-x0);
-        rec.v = (y-y0)/(y1-y0);
-        rec.t = t;
+        double t0 = t_min, t1 = t_max;
+        int hitAxis = -1;
+        double hitSign = 1.0;
         
-        vec3 outward_normal = vec3(0, 0, 1);
-        rec.set_face_normal(r, outward_normal);
-        rec.mat = mp;
-        rec.p = r.at(t);
+        double origin[3] = { rayOrigin.x(), rayOrigin.y(), rayOrigin.z() };
+        double dir[3]    = { rayDir.x(), rayDir.y(), rayDir.z() };
+        double bmin[3]   = { box_min.x(), box_min.y(), box_min.z() };
+        double bmax[3]   = { box_max.x(), box_max.y(), box_max.z() };
+        
+        for (int axis = 0; axis < 3; axis++)
+        {
+            double invD = 1.0 / dir[axis];
+            double tNear = (bmin[axis] - origin[axis]) * invD;
+            double tFar  = (bmax[axis] - origin[axis]) * invD;
+            double sign = -1.0; // 默认:从min面进入,法线朝负方向
+            
+            if (invD < 0.0) { std::swap(tNear, tFar); sign = 1.0; }
+            
+            if (tNear > t0) { t0 = tNear; hitAxis = axis; hitSign = sign; }
+            if (tFar < t1) t1 = tFar;
+            if (t0 > t1) return false; // 三个轴的有效区间没有交集,说明没命中
+        }
+        
+        if (hitAxis < 0 || t0 < t_min || t0 > t_max) return false;
+        
+        rec.t = t0;
+        rec.point = rayOrigin + rayDir * t0;
+        
+        double n[3] = {0.0, 0.0, 0.0};
+        n[hitAxis] = hitSign;
+        vec3 outward_normal(n[0], n[1], n[2]);
+        
+        // 如果你的hit_record有set_face_normal这个辅助方法(RTIOW标准写法),直接用;
+        // 如果你的版本没有这个方法,把下面两行换成你sphere.h里手动判断front_face的写法
+        rec.set_face_normal(rayOrigin, rayDir, outward_normal);
+        rec.mat = mat_ptr;
         return true;
     }
-
-    // 为矩形光源 aabb 增添一定厚度
-    bool bounding_box(double t0, double t1, aabb& output_box) const override
+    
+    bool bounding_box(aabb& output_box) const override
     {
-        output_box = aabb(vec3(x0,y0, k-0.0001), vec3(x1, y1, k+0.0001));
+        output_box = aabb(box_min, box_max);
         return true;
     }
+    
+    // 给BVHFlattener用的访问器
+    vec3 get_min() const { return box_min; }
+    vec3 get_max() const { return box_max; }
+    shared_ptr<material> get_material() const { return mat_ptr; }
+    
+    private:
+    vec3 box_min, box_max;
+    shared_ptr<material> mat_ptr;
 };
 
-class xz_rect: public hittable 
-{
-        public:
-            xz_rect() {}
 
-            xz_rect(double _x0, double _x1, double _z0, double _z1, double _k, shared_ptr<material> mat)
-                : x0(_x0), x1(_x1), z0(_z0), z1(_z1), k(_k), mp(mat) {};
-
-            bool hit(const ray& r, double t0, double t1, hit_record& rec) const override
-            {
-                auto t = (k-r.origin().y()) / r.direction().y();
-                if (t < t0 || t > t1)
-                    return false;
-                auto x = r.origin().x() + t*r.direction().x();
-                auto z = r.origin().z() + t*r.direction().z();
-                if (x < x0 || x > x1 || z < z0 || z > z1)
-                    return false;
-                rec.u = (x-x0)/(x1-x0);
-                rec.v = (z-z0)/(z1-z0);
-                rec.t = t;
-                vec3 outward_normal = vec3(0, 1, 0);
-                rec.set_face_normal(r, outward_normal);
-                rec.mat = mp;
-                rec.p = r.at(t);
-                return true;
-            }
-
-            virtual bool bounding_box(double t0, double t1, aabb& output_box) const 
-            {
-                output_box =  aabb(vec3(x0,k-0.0001,z0), vec3(x1, k+0.0001, z1));
-                return true;
-            }
-
-        public:
-            shared_ptr<material> mp;
-            double x0, x1, z0, z1, k;
-};
-
-class yz_rect: public hittable 
-{
-    public:
-        yz_rect() {}
-
-        yz_rect(double _y0, double _y1, double _z0, double _z1, double _k, shared_ptr<material> mat)
-            : y0(_y0), y1(_y1), z0(_z0), z1(_z1), k(_k), mp(mat) {};
-
-        bool hit(const ray& r, double t0, double t1, hit_record& rec) const override
-        {
-            auto t = (k-r.origin().x()) / r.direction().x();
-            if (t < t0 || t > t1)
-                return false;
-            auto y = r.origin().y() + t*r.direction().y();
-            auto z = r.origin().z() + t*r.direction().z();
-            if (y < y0 || y > y1 || z < z0 || z > z1)
-                return false;
-            rec.u = (y-y0)/(y1-y0);
-            rec.v = (z-z0)/(z1-z0);
-            rec.t = t;
-            vec3 outward_normal = vec3(1, 0, 0);
-            rec.set_face_normal(r, outward_normal);
-            rec.mat = mp;
-            rec.p = r.at(t);
-            return true;
-        }
-
-        virtual bool bounding_box(double t0, double t1, aabb& output_box) const 
-        {
-            output_box =  aabb(vec3(k-0.0001, y0, z0), vec3(k+0.0001, y1, z1));
-            return true;
-        }
-
-    public:
-        shared_ptr<material> mp;
-        double y0, y1, z0, z1, k;
-};
-
+/*
 // 翻转矩形
 class flip_face : public hittable 
 {
@@ -201,49 +153,16 @@ class flip_face : public hittable
         shared_ptr<hittable> ptr;
 };
 
-// 立方体实例
-class box : public hittable
-{
-    public:
-        vec3 box_min;
-        vec3 box_max;
-        hittable_list sides;
-
-        box() {}
-        box(const vec3& p0, const vec3& p1, shared_ptr<material> ptr) : box_min(p0), box_max(p1)
-        {
-            sides.add(make_shared<xy_rect>(p0.x(), p1.x(), p0.y(), p1.y(), p1.z(), ptr));
-            sides.add(make_shared<flip_face>(make_shared<xy_rect>(p0.x(), p1.x(), p0.y(), p1.y(), p0.z(), ptr)));
-
-            sides.add(make_shared<xz_rect>(p0.x(), p1.x(), p0.z(), p1.z(), p1.y(), ptr));
-            sides.add(make_shared<flip_face>(make_shared<xz_rect>(p0.x(), p1.x(), p0.z(), p1.z(), p0.y(), ptr)));
-
-            sides.add(make_shared<yz_rect>(p0.y(), p1.y(), p0.z(), p1.z(), p1.x(), ptr));
-            sides.add(make_shared<flip_face>(make_shared<yz_rect>(p0.y(), p1.y(), p0.z(), p1.z(), p0.x(), ptr)));
-        }
-
-        bool hit(const ray& r, double t0, double t1, hit_record& rec) const override
-        {
-            return sides.hit(r, t0, t1, rec);
-        }
-
-        bool bounding_box(double t0, double t1, aabb& output_box) const override
-        {
-            output_box = aabb(box_min, box_max);
-            return true;
-        }
-};
-
 // 平移变换：在光追里我们不会对物体进行实际的移动，而是通过移动光线的源点求出交点信息，然后再平移回光线。
 // 例如，想让物体向左平移2，那就相当于是把光线源点向右平移2，求出hit_record后再-2返回到正确位置，这就相当于让物体平移了
 class translate : public hittable
 {
     public:
-        translate(shared_ptr<hittable> p, const vec3& displacement) : ptr(p), offset(displacement) {}
-
-        bool hit(const ray& r, double t_min, double t_max, hit_record& rec) const override
+    translate(shared_ptr<hittable> p, const vec3& displacement) : ptr(p), offset(displacement) {}
+    
+    bool hit(const ray& r, double t_min, double t_max, hit_record& rec) const override
         {
-            ray moved_r(r.origin() - offset, r.direction(), r.time());
+            ray moved_r(rayOrigin - offset, rayDir, r.time());
             if (!ptr->hit(moved_r, t_min, t_max, rec))
                 return false;
 
@@ -307,14 +226,14 @@ class rotate_y : public hittable
 
         bool hit(const ray& r, double t_min, double t_max, hit_record& rec) const override
         {
-            vec3 origin = r.origin();
-            vec3 direction = r.direction();
+            vec3 origin = rayOrigin;
+            vec3 direction = rayDir;
 
-            origin[0] = cos_theta*r.origin()[0] - sin_theta*r.origin()[2];
-            origin[2] = sin_theta*r.origin()[0] + cos_theta*r.origin()[2];
+            origin[0] = cos_theta*rayOrigin[0] - sin_theta*rayOrigin[2];
+            origin[2] = sin_theta*rayOrigin[0] + cos_theta*rayOrigin[2];
 
-            direction[0] = cos_theta*r.direction()[0] - sin_theta*r.direction()[2];
-            direction[2] = sin_theta*r.direction()[0] + cos_theta*r.direction()[2];
+            direction[0] = cos_theta*rayDir[0] - sin_theta*rayDir[2];
+            direction[2] = sin_theta*rayDir[0] + cos_theta*rayDir[2];
 
             ray rotated_r(origin, direction, r.time());
 
@@ -383,7 +302,7 @@ class constant_medium : public hittable
             if (rec1.t < 0) rec1.t = 0;
 
             // 计算光线在截止内穿行的实际距离
-            const auto ray_length = r.direction().length();
+            const auto ray_length = rayDir.length();
             const auto distance_inside_boundary = (rec2.t - rec1.t) * ray_length;
 
             // 比尔-朗伯定律，光线在参与介质中传播距离的随机采样

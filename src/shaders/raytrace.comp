@@ -16,6 +16,8 @@ uniform vec3 camVertical;
 uniform vec3 camU;          // 相机右方向单位向量
 uniform vec3 camV;          // 相机上方向单位向量
 uniform float lensRadius;   // 光圈半径,越大虚化越强,0表示完全不虚化(针孔相机)
+uniform float focusRangeTolerance; // 焦点附近的"完全清晰"容忍区间,数值越大清晰范围越广
+uniform float focusDist; // 焦距,用于容忍区间计算,判断某个点是否"足够接近"焦平面
 
 uniform int bvhRootIndex;   // bvh 根节点索引s
 uniform uint frameCount;    // CPU端每帧递增后传入
@@ -29,7 +31,8 @@ struct BVHNode
     vec3 aabbMax;
     int rightChild;
     int isLeaf;
-    float pad0, pad1, pad2;
+    float primType;
+    float pad1, pad2;
 };
 
 struct Sphere 
@@ -38,6 +41,14 @@ struct Sphere
     float radius;
     int materialId;
     float pad0, pad1, pad2;
+};
+
+struct Box 
+{
+    vec3 boxMin;
+    int materialId;
+    vec3 boxMax;
+    float pad0;
 };
 
 struct HitRecord
@@ -66,6 +77,7 @@ layout(std430, binding = 1) readonly buffer BVHBuffer {BVHNode nodes[];};
 layout(std430, binding = 2) readonly buffer SphereBuffer {Sphere spheres[];};
 layout(std430, binding = 3) readonly buffer MaterialBuffer {Material materials[];};
 layout(std430, binding = 4) readonly buffer LightBuffer { int lightIndices[]; };
+layout(std430, binding = 5) readonly buffer BoxBuffer { Box boxes[]; };
 
 //------------------------ 基本随机数工具函数 --------------------------
 // PCG哈希，输入一个整数种子，输出另一个"随机"整数
@@ -148,6 +160,43 @@ float sphereFarRoot(Sphere s, vec3 rayOrigin, vec3 rayDir)
     if (discriminant < 0.0) return -1.0; // 理论上不该发生(既然已经命中了),防御性返回
     float sqrtd = sqrt(discriminant);
     return (-halfB + sqrtd) / a; // 加号对应远交点(出射点)
+}
+
+// ----------------------------- 光线-立方体求交 --------------------------------
+bool hitBox(Box b, vec3 rayOrigin, vec3 rayDir, float tMin, float tMax, out HitRecord rec) 
+{
+    float t0 = tMin, t1 = tMax;
+    int hitAxis = -1;
+    float hitSign = 1.0;
+
+    vec3 invD = 1.0 / rayDir;
+    vec3 tNear3 = (b.boxMin - rayOrigin) * invD;
+    vec3 tFar3  = (b.boxMax - rayOrigin) * invD;
+
+    for (int axis = 0; axis < 3; axis++) {
+        float tNear = tNear3[axis];
+        float tFar  = tFar3[axis];
+        float sign = -1.0;
+        if (invD[axis] < 0.0) {
+            float tmp = tNear; tNear = tFar; tFar = tmp;
+            sign = 1.0;
+        }
+        if (tNear > t0) { t0 = tNear; hitAxis = axis; hitSign = sign; }
+        if (tFar < t1) t1 = tFar;
+        if (t0 > t1) return false;
+    }
+
+    if (hitAxis < 0 || t0 < tMin || t0 > tMax) return false;
+
+    rec.t = t0;
+    rec.point = rayOrigin + t0 * rayDir;
+    vec3 outward = vec3(0.0);
+    outward[hitAxis] = hitSign;
+    rec.frontFace = dot(rayDir, outward) < 0.0;
+    rec.normal = rec.frontFace ? outward : -outward;
+    rec.materialId = b.materialId;
+    rec.sphereIndex = -1; // 立方体不是球,这个字段对它无意义,标记-1避免isotropic分支误用
+    return true;
 }
 
 // ------------------- ONB 工具函数 --------------------------
@@ -308,12 +357,26 @@ bool traverseBVH(vec3 rayOrigin, vec3 rayDir, float tMin, float tMax, out HitRec
         if (node.isLeaf == 1)
         {
             int sIdx = node.rightChild;
-            if (hitSphere(spheres[sIdx], rayOrigin, rayDir, tMin, closestSoFar, tempRec))
+
+            if (node.primType < 0.5)
             {
-                closestSoFar = tempRec.t;
-                tempRec.sphereIndex = sIdx;
-                rec = tempRec;
-                hitAnything = true;
+                if (hitSphere(spheres[sIdx], rayOrigin, rayDir, tMin, closestSoFar, tempRec))
+                {
+                    closestSoFar = tempRec.t;
+                    tempRec.sphereIndex = sIdx;
+                    rec = tempRec;
+                    hitAnything = true;
+                }
+            }
+            else
+            {
+                // 立方体
+                if (hitBox(boxes[sIdx], rayOrigin, rayDir, tMin, closestSoFar, tempRec)) 
+                {
+                    closestSoFar = tempRec.t;
+                    rec = tempRec; // hitBox内部已经把sphereIndex设成了-1,不需要额外赋值
+                    hitAnything = true;
+                }
             }
         }
         else
@@ -410,7 +473,10 @@ vec3 rayColor(vec3 rayOrigin, vec3 rayDir, inout uint rngState)
     {
         HitRecord rec;
         if (!traverseBVH(rayOrigin, rayDir, 0.0001, INF, rec))
-            break;
+        {
+            
+    break;
+        }
 
         Material mat = materials[rec.materialId];
         if (mat.type == 3)
@@ -600,11 +666,23 @@ void main()
     float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
     // 在镜头圆盘上随机采样一个偏移点,模拟真实相机光圈的虚化效果
-    vec2 rd = lensRadius * randomInUnitDisk(rngState);
+    // 计算这条光线本来要瞄准的目标点(焦平面上的位置),在做任何镜头偏移之前先算出来
+    vec3 targetPoint = camLowerLeftCorner + u * camHorizontal + v * camVertical;
+    float distToTarget = length(targetPoint - camOrigin);
+
+    // focusRangeTolerance:在这个距离容忍区间内,完全不做虚化(哪怕理论上不在精确焦平面上)
+    // 超出这个容忍区间的部分,虚化强度按超出量线性增长,而不是从0开始就线性增长
+    float distFromFocus = abs(distToTarget - focusDist);
+    float effectiveLensRadius = 0.0;
+    if (distFromFocus > focusRangeTolerance) {
+        effectiveLensRadius = lensRadius * min((distFromFocus - focusRangeTolerance) / focusDist, 1.0);
+    }
+
+    vec2 rd = effectiveLensRadius * randomInUnitDisk(rngState);
     vec3 lensOffset = camU * rd.x + camV * rd.y;
 
     vec3 rayOrigin = camOrigin + lensOffset;
-    vec3 rayDir = normalize(camLowerLeftCorner + u * camHorizontal + v * camVertical - rayOrigin);
+    vec3 rayDir = targetPoint - camOrigin - lensOffset;
     vec3 newSample = rayColor(rayOrigin, rayDir, rngState);
 
     // 读取之前累积的样本和；第0帧时outputImage里是未初始化的垃圾数据，
