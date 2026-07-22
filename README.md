@@ -11,11 +11,11 @@
 ## 特性概览
 
 ### 核心渲染管线
-- **纯 Compute Shader 光线追踪**：不依赖光栅化管线，相机生成、求交、着色、降噪全部在 compute shader 中完成
-- **迭代式 BVH 遍历**：GPU 不支持递归，BVH 遍历采用显式数组模拟栈（stack-based traversal），构建阶段支持 **SAH（Surface Area Heuristic）** 最优分割
+- **纯 Compute Shader 光线追踪**：有别于光栅化管线，相机生成光线、求交、着色、降噪全部在 compute shader 中完成
+- **迭代式 BVH 遍历**：GPU 不支持递归，因此 BVH 遍历采用显式数组模拟栈，通过数组在 CPU 与 GPU 传递数据，构建阶段支持 **SAH（Surface Area Heuristic）** 最优分割
 - **多图元类型支持**：球体（Sphere）与轴对齐立方体（Box），统一通过 BVH 叶子节点的 `primType` 标记区分，解析法求交，无需矩形拼接
-- **渐进式累积渲染（Progressive Accumulation）**：多帧样本累加求平均，实现路径追踪的实时收敛
-- **PCG 哈希随机数生成器**：无状态、纯函数式设计，适配大规模并行线程，替代 CPU 端的 `std::mt19937`
+- **渐进式累积渲染（Progressive Accumulation）**：多帧样本累加求平均，实现路径追踪的实时收敛（TTA抗锯齿还没做）
+- **PCG 哈希随机数生成器**：GPU 线程专用，替代 CPU 端的 `std::mt19937`
 
 ### 材质系统
 | 材质类型 | 说明 |
@@ -24,36 +24,31 @@
 | Metal | 镜面反射 + 可调模糊度(Fuzz) |
 | Dielectric | 玻璃材质，Schlick 近似菲涅尔反射/折射，支持 **随机通道色散(Stochastic Spectral Dispersion)** 模拟三棱镜效果 |
 | Diffuse Light | 自发光材质，作为场景光源 |
-| Isotropic（体积介质） | **体积随机游走(Volumetric Random Walk)** 实现次表面散射，支持 Henyey-Greenstein 相函数各向异性散射，叠加菲涅尔表面反射营造"宝石"质感 |
+| Isotropic（体积介质） | **体积随机游走(Volumetric Random Walk)** 实现次表面散射，支持 Henyey-Greenstein 相函数各向异性散射 |
 
 ### 光照与采样
-- **PDF 混合重要性采样**：Lambertian 表面按 50/50 概率在余弦分布采样与光源方向采样（Next Event Estimation）之间混合，显著降低小光源场景的噪点
+- **PDF 混合重要性采样**：Lambertian 表面按 50/50 概率在余弦分布采样与光源方向采样（Next Event Estimation）之间混合，显著降低小光源场景的噪点，但是由于一些不确定性影响（？），玻璃部分噪点严重。
 - **球形光源锥体采样**：基于立体角的光源采样，避免采样落在光源背面造成的浪费
 - **俄罗斯轮盘赌（Russian Roulette）**：路径深度超过阈值后按贡献度概率终止，无偏且降低计算开销
 
 ### 相机系统
-- **自由飞行相机（Free-fly Camera）**：欧拉角控制，WASD 移动 + 鼠标环视，工程上封装为独立 `Camera` 类
+- **自由飞行相机（Free-fly Camera）**：LearnOpenGL 基础，通过欧拉角控制，WASD 移动 + 鼠标环视
 - **景深（Depth of Field）**：薄透镜模型，支持光圈大小/对焦距离实时调节
 - **自动跟焦（Auto Focus Target）**：绑定世界坐标目标点，相机移动时焦平面自动跟随
-- **容忍区间虚化（Focus Range Tolerance）**：非线性景深过渡，焦平面附近保留清晰区域，避免虚化范围过大
-
+- 
 ### 后处理管线
 - **多分辨率分层 Bloom**：13-tap 降采样 + 3×3 Tent 升采样构建 mip 链，模拟真实相机光晕的层次感（参考 COD Advanced Warfare, SIGGRAPH 2014）
-- **ACES Filmic 色调映射**：HDR 无损压缩至 LDR，避免高光死白，保留明暗层次
-- **色彩分级**：曝光、对比度、饱和度、色彩平衡（冷暖调）实时可调
+- **ACES Filmic 色调映射**：HDR 压缩至 LDR，避免高光死白，保留明暗层次
+- **色彩分级**：曝光、对比度、饱和度、色彩平衡（冷暖调），可调
 
 ---
 
 ## 渲染管线架构
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ raytrace.comp│ ──▶ │ resolve.comp │ ──▶ │downsample.comp│──▶│ upsample.comp│──▶ │composite.comp│──▶ 屏幕
-│ 光追+累积样本 │     │ 求平均+提亮部分│    │  构建Bloom mip链│  │ 逐级叠加柔光  │    │ 合成+色调映射 │
-└─────────────┘     └──────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-```
 
 场景数据在 CPU 端构建完成后（球体/立方体列表 → BVH 构建 → 拍平为 flat array），通过 SSBO（Shader Storage Buffer Object）一次性上传至显存，GPU 端只负责纯数学计算，不参与场景决策。
+
+raytrace.comp 进行光追与累计样本计算，将纹理传递到 resolve.comp 进行平均化处理（平均帧）与提取高亮，进而通过 downsample.comp  和 upsample.comp 进行分级 Bloom，最后 composite.comp进行叠加处理。
 
 | Binding | 数据 |
 |---|---|
