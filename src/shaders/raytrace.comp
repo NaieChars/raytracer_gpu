@@ -662,7 +662,7 @@ void main()
     float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);
     float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
-    /vec2 rd = lensRadius * randomInUnitDisk(rngState);
+    vec2 rd = lensRadius * randomInUnitDisk(rngState);
     vec3 lensOffset = camU * rd.x + camV * rd.y;
 
     vec3 rayOrigin = camOrigin + lensOffset;
