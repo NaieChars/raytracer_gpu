@@ -160,7 +160,6 @@ int main()
         raytraceProgram.setVec3("camU", u.x, u.y, u.z);
         raytraceProgram.setVec3("camV", v.x, v.y, v.z);
         raytraceProgram.setFloat("lensRadius", lensRadius);
-        raytraceProgram.setFloat("focusDist", camera.focusDist);
         raytraceProgram.setFloat("focusRangeTolerance", 0.2f);
 
         raytraceProgram.setInt("bvhRootIndex", rootIndex);

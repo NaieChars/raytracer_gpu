@@ -17,7 +17,6 @@ uniform vec3 camU;          // 相机右方向单位向量
 uniform vec3 camV;          // 相机上方向单位向量
 uniform float lensRadius;   // 光圈半径,越大虚化越强,0表示完全不虚化(针孔相机)
 uniform float focusRangeTolerance; // 焦点附近的"完全清晰"容忍区间,数值越大清晰范围越广
-uniform float focusDist; // 焦距,用于容忍区间计算,判断某个点是否"足够接近"焦平面
 
 uniform int bvhRootIndex;   // bvh 根节点索引s
 uniform uint frameCount;    // CPU端每帧递增后传入
@@ -663,24 +662,11 @@ void main()
     float u = (float(pixelCoord.x) + randFloat(rngState)) / float(imageSize.x);
     float v = (float(pixelCoord.y) + randFloat(rngState)) / float(imageSize.y);
 
-    // 在镜头圆盘上随机采样一个偏移点,模拟真实相机光圈的虚化效果
-    // 计算这条光线本来要瞄准的目标点(焦平面上的位置),在做任何镜头偏移之前先算出来
-    vec3 targetPoint = camLowerLeftCorner + u * camHorizontal + v * camVertical;
-    float distToTarget = length(targetPoint - camOrigin);
-
-    // focusRangeTolerance:在这个距离容忍区间内,完全不做虚化
-    // 超出这个容忍区间的部分,虚化强度按超出量线性增长
-    float distFromFocus = abs(distToTarget - focusDist);
-    float effectiveLensRadius = 0.0;
-    if (distFromFocus > focusRangeTolerance) {
-        effectiveLensRadius = lensRadius * min((distFromFocus - focusRangeTolerance) / focusDist, 1.0);
-    }
-
-    vec2 rd = effectiveLensRadius * randomInUnitDisk(rngState);
+    /vec2 rd = lensRadius * randomInUnitDisk(rngState);
     vec3 lensOffset = camU * rd.x + camV * rd.y;
 
     vec3 rayOrigin = camOrigin + lensOffset;
-    vec3 rayDir = targetPoint - camOrigin - lensOffset;
+    vec3 rayDir = camLowerLeftCorner + u * camHorizontal + v * camVertical - camOrigin - lensOffset;
     vec3 newSample = rayColor(rayOrigin, rayDir, rngState);
 
     // 读取之前累积的样本和；第0帧时outputImage里是未初始化的垃圾数据，
